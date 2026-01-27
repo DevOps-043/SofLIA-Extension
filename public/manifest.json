@@ -5,10 +5,15 @@
   "description": "Herramienta de productividad para Ecos de Liderazgo",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "sidePanel"
   ],
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
   "action": {
-    "default_popup": "src/popup/index.html",
+    "default_title": "Abrir Lia AI",
+
     "default_icon": {
       "16": "assets/icon16.png",
       "48": "assets/icon48.png",
@@ -16,7 +21,7 @@
     }
   },
   "background": {
-    "service_worker": "src/background/index.ts",
+    "service_worker": "assets/background.js",
     "type": "module"
   },
   "content_scripts": [
@@ -25,7 +30,7 @@
         "<all_urls>"
       ],
       "js": [
-        "src/content/index.ts"
+        "assets/content.js"
       ]
     }
   ],
