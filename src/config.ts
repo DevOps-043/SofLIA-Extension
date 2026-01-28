@@ -1,14 +1,14 @@
 
-export const GOOGLE_API_KEY = "AIzaSyBzangmhQQpH331akjbdNvaFEDvpbEb2Q8";
+export const GOOGLE_API_KEY = "22312";
 
 // Model Configurations - User specified models
 export const MODELS = {
-  PRIMARY: "gemini-3-flash-preview",
-  FALLBACK: "gemini-3-pro-preview", 
-  COMPUTER_USE: "gemini-2.5-computer-use-preview-10-2025",
+  PRIMARY: "gemini-3-flash",  // Modelo principal con Google Search
+  FALLBACK: "gemini-3-pro",  // Fallback estable
+  COMPUTER_USE: "gemini-2.0-flash-exp",  // Para acciones [ACTION:...]
   IMAGE_GENERATION: "gemini-2.5-flash-image",
-  DEEP_RESEARCH: "deep-research-pro-preview-12-2025",
-  LIVE: "gemini-2.0-flash-exp",
+  DEEP_RESEARCH: "deep-research-pro-preview",
+  LIVE: "	gemini-2.5-flash-native-audio-preview-12-2025",
 };
 
 // Live API URL

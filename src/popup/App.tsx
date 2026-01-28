@@ -538,19 +538,38 @@ function App() {
         }
       }
 
-      // Detectar y ejecutar acciones silenciosamente
+      // Detectar y ejecutar acciones
       const actionPattern = /\[ACTION:(\w+):(\d+)(?::([^\]]+))?\]/g;
       let match;
+
+      console.log('=== DETECCIÓN DE ACCIONES ===');
+      console.log('Texto completo:', fullText);
 
       while ((match = actionPattern.exec(fullText)) !== null) {
         const actionType = match[1];
         const elementIndex = parseInt(match[2]);
         const actionValue = match[3];
 
+        console.log(`✓ Acción encontrada: ${actionType}, índice: ${elementIndex}, valor: ${actionValue}`);
+
         try {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tab?.id) {
-            await chrome.tabs.sendMessage(tab.id, {
+          // Obtener todas las pestañas de la ventana actual
+          const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          console.log('Pestañas encontradas:', tabs.length, tabs.map(t => ({ id: t.id, url: t.url?.substring(0, 50) })));
+
+          // Filtrar para obtener la pestaña real (no la del side panel)
+          const tab = tabs.find(t => t.url && !t.url.startsWith('chrome-extension://'));
+
+          if (!tab) {
+            console.error('No se encontró pestaña válida');
+            continue;
+          }
+
+          console.log('Tab seleccionada:', tab.id, tab.url?.substring(0, 80));
+
+          if (tab.id) {
+            console.log('Enviando mensaje al content script...');
+            const response = await chrome.tabs.sendMessage(tab.id, {
               action: "executeAction",
               actionData: {
                 type: actionType,
@@ -558,12 +577,15 @@ function App() {
                 value: actionValue
               }
             });
-            console.log(`Acción ejecutada: ${actionType} en elemento ${elementIndex}`);
+            console.log('✓ Respuesta del content script:', response);
           }
         } catch (actionError) {
-          console.error('Error ejecutando acción:', actionError);
+          console.error('✗ Error ejecutando acción:', actionError);
         }
       }
+
+      console.log('=== FIN DETECCIÓN ===');
+
 
     } catch (error) {
       console.error('Error:', error);

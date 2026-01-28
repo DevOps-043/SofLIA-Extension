@@ -25,30 +25,43 @@ const navigationTool = {
 
 const primaryTools: any[] = [
   { googleSearch: {} },
-];
-
-const computerTools: any[] = [
-  // User noted googleSearch is incompatible with Computer Use model
   navigationTool,
 ];
 
+
 // Model Instances
-const primaryModel = genAI.getGenerativeModel({ 
+const primaryModel = genAI.getGenerativeModel({
   model: MODELS.PRIMARY,
   tools: primaryTools,
 });
 
-const fallbackModel = genAI.getGenerativeModel({ 
-  model: MODELS.FALLBACK,
-  tools: primaryTools,
-});
-
-const computerUseModel = genAI.getGenerativeModel({ 
+// Computer Use Model - para acciones en página (sin Google Search para evitar conflictos)
+const computerUseModel = genAI.getGenerativeModel({
   model: MODELS.COMPUTER_USE,
-  tools: computerTools, 
 });
 
-
+// Helper para detectar si necesita Computer Use (acciones en página)
+const needsComputerUse = (prompt: string): boolean => {
+  const keywords = [
+    // Acciones de click
+    'click', 'clic', 'pulsa', 'presiona', 'haz click', 'haz clic', 'dale click',
+    // Acciones de escritura
+    'escribe', 'type', 'escribir', 'teclea', 'pon', 'ingresa',
+    // Acciones de scroll
+    'scroll', 'desplaza', 'baja', 'sube',
+    // Acciones de selección
+    'selecciona', 'marca', 'desmarca', 'elige',
+    // Acciones de formulario
+    'rellena', 'completa el formulario',
+    // Navegación en página
+    'llévame', 'llevame', 'ir a', 've a', 'abre', 'abrir', 'visita', 'entra',
+    'navega', 'muévete', 'muevete', 'dirígete', 'dirigete',
+    // Interacción general
+    'interactúa', 'interactua', 'hazlo', 'ejecuta'
+  ];
+  const lowerPrompt = prompt.toLowerCase();
+  return keywords.some(k => lowerPrompt.includes(k));
+};
 
 // Image Generation Model - just get the model without special config
 const imageGenerationModel = genAI.getGenerativeModel({ 
@@ -58,7 +71,7 @@ const imageGenerationModel = genAI.getGenerativeModel({
 // Deep Research Model
 const deepResearchModel = genAI.getGenerativeModel({ 
   model: MODELS.DEEP_RESEARCH,
-  tools: computerTools, // Deep Research might benefit from navigation if supported, otherwise revert to primaryTools
+  tools: primaryTools,
 });
 
 let chatSession: any = null;
@@ -175,23 +188,55 @@ export const startChatSession = (history: any[] = []) => {
   return chatSession;
 };
 
-// Helper to determine if "Computer Use" is needed based on prompt keywords
-const needsComputerUse = (prompt: string): boolean => {
-  const keywords = [
-    'click', 'type', 'scroll', 'navigate', 'screenshot', 'computadora', 'navegador', // English / Tech
-    'ir a', 'abre', 'abrir', 'llevame', 'llévame', 'visita', 'visitar', 'entra en' // Spanish
-  ];
-  return keywords.some(k => prompt.toLowerCase().includes(k));
-};
-
 export const sendMessageStream = async (message: string, context?: string) => {
   if (!chatSession) {
     startChatSession();
   }
 
+  // Detectar si necesita interacción con la página (Computer Use)
+  const useComputerUse = needsComputerUse(message);
+
+  console.log('=== GEMINI SERVICE ===');
+  console.log('Mensaje recibido:', message);
+  console.log('¿Necesita Computer Use?:', useComputerUse);
+  console.log('Modelo a usar:', useComputerUse ? MODELS.COMPUTER_USE : MODELS.PRIMARY);
+
   let prompt = message;
   if (context) {
-    const systemPrompt = `Eres Lia, un asistente de productividad amigable integrado en un navegador web.
+    let systemPrompt: string;
+
+    if (useComputerUse) {
+      // Prompt para COMPUTER USE - con acciones [ACTION:...], sin Google Search
+      systemPrompt = `Eres Lia, un asistente que CONTROLA el navegador del usuario. DEBES EJECUTAR acciones, NO solo describirlas.
+
+## COMANDOS DE ACCIÓN (se ejecutan automáticamente):
+- [ACTION:click:INDEX] - Click en elemento
+- [ACTION:type:INDEX:texto] - Escribir texto
+- [ACTION:scroll:INDEX] - Scroll hacia elemento
+
+## REGLAS CRÍTICAS:
+1. EJECUTA la acción INMEDIATAMENTE. NO analices, NO planifiques, NO describas - HAZLO.
+2. Busca el elemento en el contexto DOM por su índice [0], [1], [2]...
+3. Responde CORTO: "Hecho. [ACTION:click:X]" o similar.
+4. Si te piden ir a algún lugar de la página, haz CLICK en el enlace/botón correspondiente.
+
+## Ejemplos de respuestas CORRECTAS:
+- Usuario: "Llévame al correo" → "Abriendo tu correo [ACTION:click:37]"
+- Usuario: "Haz click en buscar" → "Listo [ACTION:click:5]"
+- Usuario: "Escribe hola" → "Escribiendo [ACTION:type:3:hola]"
+
+## Ejemplos de respuestas INCORRECTAS (NO hagas esto):
+- "Voy a analizar la página..."
+- "El plan sería hacer click en..."
+- "Podría usar open_url para..."
+
+## Contexto DOM (elementos con índices):
+${context}
+
+## Usuario:`;
+    } else {
+      // Prompt para MODELO PRIMARIO - con Google Search, sin acciones [ACTION:...]
+      systemPrompt = `Eres Lia, un asistente de productividad amigable integrado en un navegador web.
 
 ## Tu Personalidad:
 - Eres amable, profesional y concisa
@@ -200,25 +245,34 @@ export const sendMessageStream = async (message: string, context?: string) => {
 - SIEMPRE usa Google Search para fundamentar tus respuestas con fuentes actualizadas
 
 ## Reglas IMPORTANTES:
-1. Tienes la capacidad de NAVEGAR a sitios web usando la herramienta 'open_url'. Si el usuario te pide "llévame a", "abre", "ir a" o "visita" un sitio, USA la herramienta 'open_url' inmediatamente con la URL correcta.
-2. NO muestres formato [ACTION:click:X] en tus respuestas textuales.
+1. Tienes la capacidad de NAVEGAR a sitios web usando la herramienta 'open_url'. Si el usuario te pide "llévame a", "abre", "ir a" o "visita" un sitio, USA la herramienta 'open_url' inmediatamente.
+2. NO uses formato [ACTION:...] en tus respuestas.
 3. Solo responde a lo que el usuario pregunta.
-4. Enfócate en ser útil.
-5. Busca información relevante en Google para dar respuestas más completas y actualizadas.
+4. Busca información relevante en Google para dar respuestas completas y actualizadas.
 
 ## Contexto de la Página (solo para referencia):
 ${context}
 
 ## Mensaje del Usuario:`;
+    }
+
     prompt = `${systemPrompt}\n${message}`;
   }
 
-  // Check for Computer Use requirement
-  if (needsComputerUse(message)) {
-    console.log("Switching to Computer Use model...");
+  if (useComputerUse) {
+    console.log("Detectada acción en página, usando modelo Computer Use (gemini-2.0-flash-exp)...");
     const currentHistory = await chatSession.getHistory();
     chatSession = computerUseModel.startChat({
-        history: currentHistory,
+      history: currentHistory,
+    });
+  } else {
+    // Asegurar que usamos el modelo primario si no necesitamos computer use
+    const currentHistory = await chatSession.getHistory();
+    chatSession = primaryModel.startChat({
+      history: currentHistory,
+      generationConfig: {
+        maxOutputTokens: 2000,
+      },
     });
   }
 
@@ -241,23 +295,22 @@ ${context}
         }
       };
     } catch (primaryError) {
-      // If we were using Computer Use model and it failed, DO NOT fallback to standard model
-      // because standard model doesn't support the tools needed.
-      if (needsComputerUse(message)) {
-        console.error("Computer Use model failed. Not attempting fallback as it likely lacks required tools.", primaryError);
-        throw primaryError;
-      }
+      console.warn(`Model failed, trying fallback...`, primaryError);
 
-      console.warn(`Primary/Active model failed, trying fallback ${MODELS.FALLBACK}`, primaryError);
-      
-      // Fallback Logic
+      // Si estamos en modo Computer Use, no usar fallback con herramientas
       const history = await chatSession.getHistory();
-      const fallbackChat = fallbackModel.startChat({
+
+      // Usar modelo sin herramientas para fallback
+      const simpleFallback = genAI.getGenerativeModel({
+        model: MODELS.FALLBACK,
+      });
+
+      const fallbackChat = simpleFallback.startChat({
         history: history,
       });
-      
-      chatSession = fallbackChat; 
-      
+
+      chatSession = fallbackChat;
+
       const result = await fallbackChat.sendMessageStream(prompt);
       return {
         stream: result.stream,

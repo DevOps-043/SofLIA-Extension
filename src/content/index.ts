@@ -98,46 +98,77 @@ function getPageContent(): string {
 }
 
 function executeAction(action: { type: string; selector?: string; value?: string; index?: number }): { success: boolean; message: string } {
+  console.log('=== LIA EJECUTANDO ACCIÓN ===');
+  console.log('Acción recibida:', JSON.stringify(action));
+
   try {
     let element: Element | null = null;
-    
+
     if (action.selector) {
       element = document.querySelector(action.selector);
+      console.log('Buscando por selector:', action.selector, '-> encontrado:', !!element);
     } else if (typeof action.index === 'number') {
-      const selectors = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [onclick]';
+      // IMPORTANTE: Estos selectores DEBEN coincidir con los de getStructuredDOM()
+      const selectors = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]';
       const elements = document.querySelectorAll(selectors);
+      console.log(`Total elementos interactivos: ${elements.length}`);
       element = elements[action.index] || null;
+      console.log(`Elemento en índice ${action.index}:`, element);
+      if (element) {
+        console.log('Tag:', element.tagName, 'Text:', element.textContent?.substring(0, 50));
+      }
     }
-    
+
     if (!element) {
+      console.log('✗ Elemento NO encontrado');
       return { success: false, message: 'Elemento no encontrado' };
     }
-    
+
+    console.log('Ejecutando tipo de acción:', action.type);
+
     switch (action.type) {
       case 'click':
         (element as HTMLElement).click();
+        console.log('✓ Click ejecutado');
         return { success: true, message: `Click ejecutado en ${element.tagName}` };
-        
+
       case 'type':
+        console.log('Intentando escribir en elemento:', element.tagName);
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+          element.focus();
           element.value = action.value || '';
           element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log('✓ Texto escrito:', action.value);
           return { success: true, message: `Texto escrito: ${action.value}` };
         }
-        return { success: false, message: 'El elemento no es un campo de texto' };
-        
+        // Intentar con contenteditable
+        if ((element as HTMLElement).isContentEditable) {
+          (element as HTMLElement).focus();
+          (element as HTMLElement).innerText = action.value || '';
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          console.log('✓ Texto escrito en contenteditable');
+          return { success: true, message: `Texto escrito en contenteditable: ${action.value}` };
+        }
+        console.log('✗ El elemento no es un campo de texto');
+        return { success: false, message: `El elemento no es un campo de texto (es ${element.tagName})` };
+
       case 'scroll':
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        console.log('✓ Scroll ejecutado');
         return { success: true, message: 'Scroll ejecutado' };
-        
+
       case 'focus':
         (element as HTMLElement).focus();
+        console.log('✓ Focus aplicado');
         return { success: true, message: 'Focus aplicado' };
-        
+
       default:
+        console.log('✗ Acción desconocida:', action.type);
         return { success: false, message: `Acción desconocida: ${action.type}` };
     }
   } catch (error) {
+    console.error('✗ Error en executeAction:', error);
     return { success: false, message: `Error: ${error}` };
   }
 }
@@ -393,32 +424,37 @@ document.addEventListener('scroll', () => {
 // ============================================
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  console.log('Lia content script recibió mensaje:', request.action);
+
   switch (request.action) {
     case 'ping':
       // Respond to ping from background to check if script is loaded
       sendResponse({ pong: true });
       break;
-      
+
     case 'getPageContent':
       sendResponse({ content: getPageContent() });
       break;
-      
+
     case 'getStructuredDOM':
       sendResponse({ dom: getStructuredDOM() });
       break;
-      
+
     case 'executeAction':
+      console.log('Ejecutando acción:', request.actionData);
       const result = executeAction(request.actionData);
+      console.log('Resultado de la acción:', result);
       sendResponse(result);
       break;
-      
+
     case 'getSelectedText':
       sendResponse({ text: currentSelection });
       break;
-      
+
     default:
+      console.log('Acción no reconocida:', request.action);
       sendResponse({ error: 'Acción no reconocida' });
   }
-  
+
   return true;
 });
