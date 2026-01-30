@@ -1,10 +1,23 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { LiveClient } from '../services/live-api';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { LiveClient, AudioCapture } from '../services/live-api';
 import ReactMarkdown from 'react-markdown';
+import { useAuth } from '../contexts/AuthContext';
+import Auth from '../components/Auth';
+import { supabase } from '../lib/supabase';
+import { SettingsModal } from './SettingsModal';
+import { FeedbackModal } from './FeedbackModal';
 
 interface GroundingSource {
   uri: string;
   title: string;
+}
+
+interface MapPlace {
+  placeId?: string;
+  name: string;
+  address?: string;
+  rating?: number;
+  uri?: string;
 }
 
 interface Message {
@@ -15,9 +28,101 @@ interface Message {
   reactions?: string[];
   images?: string[];
   sources?: GroundingSource[];
+  places?: MapPlace[];
+  contextData?: { text: string; action: string } | null;
+}
+
+interface Folder {
+  id: string;
+  name: string;
+  description?: string;
+  user_id: string;
+  created_at?: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+  updatedAt: number;
+  folderId?: string | null;
+}
+
+interface UserSettings {
+  nickname?: string;
+  occupation?: string;
+  tone_style?: string;
+  about_user?: string;
+  custom_instructions?: string;
 }
 
 function App() {
+  // Auth
+  const { session, loading: authLoading, signOut, user } = useAuth();
+
+  // Loading screen while checking auth
+  if (authLoading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: 'var(--bg-dark-main)', color: 'var(--color-text-primary)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--color-accent)', borderTopColor: 'transparent', animation: 'spin 1s linear infinite' }} />
+          <span style={{ fontSize: '13px', opacity: 0.8 }}>Iniciando Lia...</span>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login if not authenticated
+  if (!session) {
+    return <Auth />;
+  }
+
+  // Static Model List with Rich Metadata for UI
+  const MODEL_OPTIONS = [
+      { 
+        id: 'gemini-3.0-flash-preview', 
+        name: 'Gemini 3.0 Flash', 
+        desc: 'Equilibrio perfecto entre velocidad y calidad.',
+        icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>,
+        badge: 'Recomendado',
+        color: '#00D4B3' // Aqua
+      },
+      { 
+        id: 'gemini-3-pro-preview', 
+        name: 'Gemini 3 Pro', 
+        desc: 'Mayor capacidad de razonamiento lógico.',
+        icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"></path><path d="M8.5 8.5v.01"></path><path d="M16 12v.01"></path><path d="M12 16v.01"></path></svg>,
+        badge: 'Pro',
+        color: '#A855F7' // Purple
+      },
+      { 
+        id: 'gemini-2.5-flash', 
+        name: 'Gemini 2.5 Flash', 
+        desc: 'Ultra rápido y ligero para tareas simples.',
+        icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="M12 15l-3-3a22 22 0 0 1 2-12 22 22 0 0 1 12 2 22 22 0 0 1-11 13z"></path><path d="M9 9l3 3"></path></svg>,
+        badge: 'Nuevo',
+        color: '#3B82F6' // Blue
+      },
+      { 
+        id: 'gemini-2.5-pro', 
+        name: 'Gemini 2.5 Pro', 
+        desc: 'Modelo de máxima inteligencia.',
+        icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"></path></svg>,
+        badge: 'Experimental',
+        color: '#F59E0B' // Amber
+      },
+      { 
+        id: 'gemini-2.5-flash-lite', 
+        name: 'Gemini 2.5 Flash Lite', 
+        desc: 'Versión estable anterior.',
+        icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>,
+        badge: null,
+        color: '#10B981' // Green
+      }
+  ];
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -29,18 +134,47 @@ function App() {
 
   // Live API States
   const [isLiveActive, setIsLiveActive] = useState(false);
+  const [isLiveConnecting, setIsLiveConnecting] = useState(false);
+  const [isLiveMicActive, setIsLiveMicActive] = useState(false);
   const liveClientRef = useRef<LiveClient | null>(null);
+  const audioCapturRef = useRef<AudioCapture | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  
+
+  // Model States
+  const [preferredPrimaryModel, setPreferredPrimaryModel] = useState<string>('gemini-3-flash-preview');
+  const [_preferredFallbackModel, setPreferredFallbackModel] = useState<string>('gemini-2.5-flash');
+  const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
+
+  // Handler for model change
+  const handleModelChange = async (type: 'primary' | 'fallback', modelId: string) => {
+      // Optimistic update
+      if (type === 'primary') setPreferredPrimaryModel(modelId);
+      else setPreferredFallbackModel(modelId);
+
+      if (user) {
+          const updateData = {
+              user_id: user.id,
+              [type === 'primary' ? 'primary_model' : 'fallback_model']: modelId
+          };
+          
+          await supabase.from('user_ai_settings').upsert(updateData, { onConflict: 'user_id' });
+      }
+  };
+
   // Plus Menu States
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const [isDeepResearch, setIsDeepResearch] = useState(false);
   const [isImageGenMode, setIsImageGenMode] = useState(false);
-  
+  const [isPromptOptimizerMode, setIsPromptOptimizerMode] = useState(false);
+  const [targetAI, setTargetAI] = useState<'chatgpt' | 'claude' | 'gemini' | null>(null);
+
+  // Maps Mode States
+  const [isMapsMode, setIsMapsMode] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+
   // Settings Menu States
   const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
-    // Load theme from localStorage or default to 'dark'
     if (typeof window !== 'undefined') {
       return (localStorage.getItem('lia_theme') as 'light' | 'dark' | 'system') || 'dark';
     }
@@ -49,6 +183,29 @@ function App() {
 
   // Image Zoom State
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+
+  // Sidebar & History States
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [chatHistory, setChatHistory] = useState<ChatSession[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+
+  // Folders State
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+
+  // Settings & Feedback Modals
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<'positive' | 'negative' | null>(null);
+  const [feedbackMessageContent, setFeedbackMessageContent] = useState('');
+
+  // Personalization Settings
+  const [_userSettings, setUserSettings] = useState<UserSettings | null>(null);
+
+  // Debounce ref for saving
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Apply Theme & Persist
   useLayoutEffect(() => {
@@ -78,6 +235,302 @@ function App() {
       stopLiveSession();
     };
   }, []);
+
+  // ========== SUPABASE DATA LOADING ==========
+
+  // Load user settings
+  const loadUserSettings = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const { data } = await supabase
+        .from('user_ai_settings')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+      if (data) {
+        setUserSettings({
+          nickname: data.nickname,
+          occupation: data.occupation,
+          tone_style: data.tone_style,
+          about_user: data.about_user,
+          custom_instructions: data.custom_instructions
+        });
+      }
+    } catch (err) {
+      console.log('No user settings found');
+    }
+  }, [user?.id]);
+
+  // Load folders
+  const loadFolders = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const { data } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
+      if (data) setFolders(data);
+    } catch (err) {
+      console.error('Error loading folders:', err);
+    }
+  }, [user?.id]);
+
+  // Load chat history
+  const loadChatHistory = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const { data: conversations } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('updated_at', { ascending: false })
+        .limit(50);
+
+      if (conversations && conversations.length > 0) {
+        const sessionsPromises = conversations.map(async (conv) => {
+          const { data: msgs } = await supabase
+            .from('messages')
+            .select('*')
+            .eq('conversation_id', conv.id)
+            .order('created_at', { ascending: true });
+
+          const formattedMessages: Message[] = (msgs || []).map(m => ({
+            id: m.id,
+            role: m.role as 'user' | 'model',
+            text: m.content,
+            timestamp: new Date(m.created_at).getTime(),
+            sources: m.metadata?.sources,
+            places: m.metadata?.places,
+            images: m.metadata?.images
+          }));
+
+          return {
+            id: conv.id,
+            title: conv.title,
+            messages: formattedMessages,
+            createdAt: new Date(conv.created_at).getTime(),
+            updatedAt: new Date(conv.updated_at).getTime(),
+            folderId: conv.folder_id
+          } as ChatSession;
+        });
+
+        const sessions = (await Promise.all(sessionsPromises)).filter(Boolean) as ChatSession[];
+        setChatHistory(sessions);
+
+        // Restore last chat
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          chrome.storage.local.get(['lia_current_chat_id'], (result) => {
+            if (result.lia_current_chat_id) {
+              const currentChat = sessions.find(c => c.id === result.lia_current_chat_id);
+              if (currentChat) {
+                setCurrentChatId(currentChat.id);
+                setMessages(currentChat.messages);
+              }
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Error loading chat history:', err);
+    }
+  }, [user?.id]);
+
+  // Generate chat title
+  const generateChatTitle = (msgs: Message[]): string => {
+    const firstUserMsg = msgs.find(m => m.role === 'user');
+    if (firstUserMsg) {
+      const text = firstUserMsg.text.slice(0, 40);
+      return text.length < firstUserMsg.text.length ? text + '...' : text;
+    }
+    return 'Nueva conversación';
+  };
+
+  // Save current chat
+  const saveCurrentChat = useCallback(async () => {
+    if (messages.length === 0 || !user?.id) return;
+
+    try {
+      let chatId = currentChatId;
+      const title = generateChatTitle(messages);
+
+      if (!chatId) {
+        const { data: newConv, error } = await supabase
+          .from('conversations')
+          .insert({ user_id: user.id, title })
+          .select()
+          .single();
+
+        if (error) throw error;
+        chatId = newConv.id;
+        setCurrentChatId(chatId);
+
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          chrome.storage.local.set({ lia_current_chat_id: chatId });
+        }
+      } else {
+        await supabase.from('conversations').update({ title }).eq('id', chatId);
+      }
+
+      const { data: existingMsgs } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('conversation_id', chatId);
+
+      const existingIds = new Set((existingMsgs || []).map(m => m.id));
+      const newMessages = messages.filter(m => !existingIds.has(m.id));
+
+      if (newMessages.length > 0) {
+        const messagesToInsert = newMessages.map(m => ({
+          id: m.id,
+          conversation_id: chatId,
+          user_id: user.id,
+          role: m.role,
+          content: m.text,
+          metadata: { sources: m.sources, places: m.places, images: m.images }
+        }));
+
+        await supabase.from('messages').insert(messagesToInsert);
+      }
+
+      // Update local history
+      setChatHistory(prev => {
+        const existingIndex = prev.findIndex(c => c.id === chatId);
+        const updatedChat: ChatSession = {
+          id: chatId!,
+          title,
+          messages,
+          createdAt: prev.find(c => c.id === chatId)?.createdAt || Date.now(),
+          updatedAt: Date.now(),
+          folderId: prev.find(c => c.id === chatId)?.folderId
+        };
+
+        if (existingIndex >= 0) {
+          const newHistory = [...prev];
+          newHistory[existingIndex] = updatedChat;
+          return newHistory;
+        }
+        return [updatedChat, ...prev];
+      });
+    } catch (err) {
+      console.error('Error saving chat:', err);
+    }
+  }, [messages, currentChatId, user?.id]);
+
+  // Create new chat
+  const createNewChat = useCallback(() => {
+    setMessages([]);
+    setCurrentChatId(null);
+    setSelectedContext(null);
+    setIsSidebarOpen(false);
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      chrome.storage.local.remove('lia_current_chat_id');
+    }
+  }, []);
+
+  // Load a chat
+  const loadChat = useCallback((chat: ChatSession) => {
+    setMessages(chat.messages);
+    setCurrentChatId(chat.id);
+    setIsSidebarOpen(false);
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      chrome.storage.local.set({ lia_current_chat_id: chat.id });
+    }
+  }, []);
+
+  // Delete a chat
+  const deleteChat = useCallback(async (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await supabase.from('conversations').delete().eq('id', chatId);
+      setChatHistory(prev => prev.filter(c => c.id !== chatId));
+      if (chatId === currentChatId) {
+        setMessages([]);
+        setCurrentChatId(null);
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          chrome.storage.local.remove('lia_current_chat_id');
+        }
+      }
+    } catch (err) {
+      console.error('Error deleting chat:', err);
+    }
+  }, [currentChatId]);
+
+  // Create folder
+  const createFolder = async () => {
+    if (!newFolderName.trim() || !user?.id) return;
+    try {
+      const { data, error } = await supabase
+        .from('folders')
+        .insert({ user_id: user.id, name: newFolderName.trim() })
+        .select()
+        .single();
+
+      if (!error && data) {
+        setFolders(prev => [...prev, data]);
+        setNewFolderName('');
+        setIsFolderModalOpen(false);
+      }
+    } catch (err) {
+      console.error('Error creating folder:', err);
+    }
+  };
+
+  // Move chat to folder (reserved for future drag-drop feature)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const moveChatToFolder = async (chatId: string, folderId: string | null) => {
+    try {
+      await supabase
+        .from('conversations')
+        .update({ folder_id: folderId })
+        .eq('id', chatId);
+
+      setChatHistory(prev =>
+        prev.map(c => c.id === chatId ? { ...c, folderId } : c)
+      );
+    } catch (err) {
+      console.error('Error moving chat:', err);
+    }
+  };
+  void moveChatToFolder; // Suppress unused warning - reserved for future use
+
+  // Format relative time
+  const formatRelativeTime = (timestamp: number): string => {
+    const diff = Date.now() - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return 'Ahora';
+    if (minutes < 60) return `Hace ${minutes}m`;
+    if (hours < 24) return `Hace ${hours}h`;
+    if (days < 7) return `Hace ${days}d`;
+    return new Date(timestamp).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+  };
+
+  // Load data on mount
+  useEffect(() => {
+    if (user?.id) {
+      loadUserSettings();
+      loadFolders();
+      loadChatHistory();
+    }
+  }, [user?.id, loadUserSettings, loadFolders, loadChatHistory]);
+
+  // Auto-save chat (debounced)
+  useEffect(() => {
+    if (messages.length > 0 && user?.id) {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        saveCurrentChat();
+      }, 1000);
+    }
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [messages, user?.id, saveCurrentChat]);
+
+  // ========== END SUPABASE ==========
 
   // Context from selected text (shown as attachment, not auto-sent)
   const [selectedContext, setSelectedContext] = useState<{ text: string; action: string } | null>(null);
@@ -206,6 +659,12 @@ function App() {
   };
 
   const handleLiveToggle = async () => {
+    // Prevent double-clicks while connecting
+    if (isLiveConnecting) {
+      console.log("Already connecting to Live API...");
+      return;
+    }
+
     if (isLiveActive) {
       stopLiveSession();
     } else {
@@ -215,45 +674,150 @@ function App() {
 
   const startLiveSession = async () => {
     try {
-      if (!liveClientRef.current) {
-        liveClientRef.current = new LiveClient(
-          (data) => {
-            if (data.serverContent?.modelTurn?.parts) {
-              const text = data.serverContent.modelTurn.parts.find((p: any) => p.text)?.text;
-              if (text) {
-                setMessages(prev => [...prev, {
-                  id: Date.now().toString(),
-                  role: 'model',
-                  text: text,
-                  timestamp: Date.now()
-                }]);
-              }
-            }
-          },
-          (error) => {
-            console.error("Live Client Error", error);
-            stopLiveSession();
-          },
-          () => {
-            setIsLiveActive(false);
-          }
-        );
+      setIsLiveConnecting(true);
+
+      // Show connecting message
+      setMessages(prev => [...prev, {
+        id: 'live-connecting',
+        role: 'model',
+        text: '🔄 **Conectando a Live API...**\n\nEstableciendo conexión de audio en tiempo real.',
+        timestamp: Date.now()
+      }]);
+
+      // Reset any existing client
+      if (liveClientRef.current) {
+        liveClientRef.current.disconnect();
+        liveClientRef.current = null;
       }
 
+      // Create client with new callback interface
+      liveClientRef.current = new LiveClient({
+        onTextResponse: (text: string) => {
+          // Handle text responses (if any)
+          console.log("Live API: Text response:", text);
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'model',
+            text: text,
+            timestamp: Date.now()
+          }]);
+        },
+        onAudioResponse: (_audioData: string) => {
+          // Audio playback is handled internally by LiveClient
+          console.log("Live API: Audio response received");
+        },
+        onError: (error: Error) => {
+          console.error("Live Client Error:", error);
+          const errorMsg = error?.message || 'Error de conexión con Live API';
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'model',
+            text: `⚠️ **Error de Conversación en Vivo**\n\n${errorMsg}`,
+            timestamp: Date.now()
+          }]);
+          stopLiveSession();
+        },
+        onClose: () => {
+          console.log("Live session closed");
+          setIsLiveActive(false);
+          setIsLiveMicActive(false);
+        },
+        onReady: () => {
+          console.log("Live API: Ready for audio");
+        }
+      });
+
+      console.log("Connecting to Live API...");
       await liveClientRef.current.connect();
+
+      // Remove connecting message and show success
+      setMessages(prev => prev.filter(m => m.id !== 'live-connecting').concat({
+        id: Date.now().toString(),
+        role: 'model',
+        text: '🎤 **Conversación en vivo activada**\n\nAhora puedes hablar conmigo en tiempo real. Presiona el botón de micrófono (verde) para comenzar a hablar.',
+        timestamp: Date.now()
+      }));
+
       setIsLiveActive(true);
-    } catch (e) {
-      console.error("Failed to start live session", e);
+      setIsLiveConnecting(false);
+
+    } catch (e: any) {
+      console.error("Failed to start live session:", e);
+      const errorMsg = e?.message || 'No se pudo iniciar la sesión en vivo';
+
+      // Detect if it's a permission/API key issue
+      const isPermissionError = errorMsg.includes('API key') || errorMsg.includes('permisos') || errorMsg.includes('Live API');
+
+      // Remove connecting message and show error
+      setMessages(prev => prev.filter(m => m.id !== 'live-connecting').concat({
+        id: Date.now().toString(),
+        role: 'model',
+        text: isPermissionError
+          ? `⚠️ **Error de Permisos de Live API**\n\n${errorMsg}\n\n**Para solucionarlo:**\n1. Ve a [Google AI Studio](https://aistudio.google.com/)\n2. Crea una nueva API key o verifica que tu key tenga acceso a modelos Live\n3. Asegúrate de que "Generative Language API" esté habilitado en tu proyecto de Google Cloud\n\n*Nota: La Live API requiere permisos especiales que no todas las API keys tienen por defecto.*`
+          : `⚠️ **No se pudo conectar**\n\n${errorMsg}\n\nSugerencias:\n• Verifica tu conexión a internet\n• Recarga la extensión\n• Intenta de nuevo en unos segundos`,
+        timestamp: Date.now()
+      }));
+
+      setIsLiveConnecting(false);
+      stopLiveSession();
     }
   };
 
   const stopLiveSession = () => {
+    // Stop audio capture
+    if (audioCapturRef.current) {
+      audioCapturRef.current.stop();
+      audioCapturRef.current = null;
+    }
+    // Disconnect live client
     if (liveClientRef.current) {
       liveClientRef.current.disconnect();
+      liveClientRef.current = null;
     }
     setIsLiveActive(false);
+    setIsLiveConnecting(false);
+    setIsLiveMicActive(false);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  // Toggle live microphone for voice input
+  const toggleLiveMicrophone = async () => {
+    if (!isLiveActive || !liveClientRef.current) {
+      console.warn("Live session not active");
+      return;
+    }
+
+    if (isLiveMicActive) {
+      // Stop microphone
+      if (audioCapturRef.current) {
+        audioCapturRef.current.stop();
+        audioCapturRef.current = null;
+      }
+      setIsLiveMicActive(false);
+      console.log("Live microphone stopped");
+    } else {
+      // Start microphone capture
+      try {
+        audioCapturRef.current = new AudioCapture();
+        await audioCapturRef.current.start((base64Audio: string) => {
+          // Send audio chunks to Live API
+          if (liveClientRef.current?.isReady()) {
+            liveClientRef.current.sendAudioChunk(base64Audio);
+          }
+        });
+        setIsLiveMicActive(true);
+        console.log("Live microphone started");
+      } catch (e: any) {
+        console.error("Failed to start microphone:", e);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'model',
+          text: `⚠️ **Error de Micrófono**\n\nNo se pudo acceder al micrófono. Asegúrate de dar permisos.`,
+          timestamp: Date.now()
+        }]);
+      }
     }
   };
 
@@ -387,6 +951,71 @@ function App() {
             prev.map(msg =>
               msg.id === aiMessageId
                 ? { ...msg, text: `Error generando imagen: ${errorMessage}` }
+                : msg
+            )
+          );
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      // If in Prompt Optimizer mode
+      if (isPromptOptimizerMode && targetAI) {
+        try {
+          const { optimizePrompt } = await import('../services/gemini');
+          const optimizedPrompt = await optimizePrompt(apiMessage, targetAI);
+
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === aiMessageId
+                ? {
+                    ...msg,
+                    text: `**Prompt optimizado para ${targetAI === 'chatgpt' ? 'ChatGPT' : targetAI === 'claude' ? 'Claude' : 'Gemini'}:**\n\n\`\`\`\n${optimizedPrompt}\n\`\`\`\n\n*Copia este prompt y úsalo en ${targetAI === 'chatgpt' ? 'ChatGPT' : targetAI === 'claude' ? 'Claude' : 'Gemini'} para mejores resultados.*`
+                  }
+                : msg
+            )
+          );
+        } catch (error) {
+          console.error('Prompt optimization error:', error);
+          const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === aiMessageId
+                ? { ...msg, text: `Error optimizando prompt: ${errorMessage}` }
+                : msg
+            )
+          );
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      // If in Maps mode
+      if (isMapsMode && userLocation) {
+        try {
+          const { runMapsQuery } = await import('../services/gemini');
+          const result = await runMapsQuery(apiMessage, userLocation);
+
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === aiMessageId
+                ? {
+                    ...msg,
+                    text: result.text,
+                    places: result.places
+                  }
+                : msg
+            )
+          );
+        } catch (error) {
+          console.error('Maps query error:', error);
+          const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === aiMessageId
+                ? { ...msg, text: `Error buscando lugares: ${errorMessage}` }
                 : msg
             )
           );
@@ -624,6 +1253,30 @@ function App() {
         transition: 'background-color 0.3s'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Hamburger Menu Button */}
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            style={{
+              background: isSidebarOpen ? 'var(--bg-dark-tertiary)' : 'transparent',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '8px',
+              cursor: 'pointer',
+              color: isSidebarOpen ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+              transition: 'all 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            title="Menú"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+
           <img
             src={liaAvatar}
             alt="Lia"
@@ -660,37 +1313,99 @@ function App() {
               {isLiveActive ? 'Conectada en tiempo real' : 'Tu asistente de productividad'}
             </span>
             
+            {/* Model Selector in Header (Custom Trigger) */}
+            <div style={{ marginTop: '2px' }}>
+               <button 
+                  onClick={() => setIsModelSelectorOpen(true)}
+                  style={{
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      borderRadius: '12px',
+                      color: 'var(--color-accent)',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      padding: '4px 10px',
+                      cursor: 'pointer',
+                      outline: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      transition: 'all 0.2s',
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
+                  onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
+               >
+                 {(() => {
+                    const current = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
+                    return (
+                        <>
+                            <span>{current?.icon || '⚡'}</span>
+                            <span>{current?.name || 'Gemini 3.0 Flash'}</span>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ opacity: 0.7 }}>
+                                <path d="M6 9l6 6 6-6"/>
+                            </svg>
+                        </>
+                    );
+                 })()}
+               </button>
+            </div>
+            
             {/* Active Mode Indicator in Header */}
-            {(isDeepResearch || isImageGenMode) && (
+            {(isDeepResearch || isImageGenMode || isPromptOptimizerMode || isMapsMode) && (
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
                 marginTop: '6px',
                 padding: '4px 10px',
-                background: isDeepResearch ? 'rgba(0, 212, 179, 0.15)' : 'rgba(168, 85, 247, 0.15)',
+                background: isDeepResearch ? 'rgba(0, 212, 179, 0.15)' :
+                           isImageGenMode ? 'rgba(168, 85, 247, 0.15)' :
+                           isPromptOptimizerMode ? 'rgba(251, 191, 36, 0.15)' :
+                           'rgba(59, 130, 246, 0.15)',
                 borderRadius: '12px',
                 fontSize: '11px',
-                color: isDeepResearch ? '#00d4b3' : '#a855f7',
+                color: isDeepResearch ? '#00d4b3' :
+                       isImageGenMode ? '#a855f7' :
+                       isPromptOptimizerMode ? '#fbbf24' :
+                       '#3b82f6',
                 fontWeight: 500
               }}>
-                {isDeepResearch ? (
+                {isDeepResearch && (
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                   </svg>
-                ) : (
+                )}
+                {isImageGenMode && (
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                     <circle cx="8.5" cy="8.5" r="1.5"></circle>
                     <polyline points="21 15 16 10 5 21"></polyline>
                   </svg>
                 )}
-                {isDeepResearch ? 'Deep Research' : 'Generación de Imagen'}
+                {isPromptOptimizerMode && (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                  </svg>
+                )}
+                {isMapsMode && (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                    <circle cx="12" cy="10" r="3"></circle>
+                  </svg>
+                )}
+                {isDeepResearch ? 'Deep Research' :
+                 isImageGenMode ? 'Generación de Imagen' :
+                 isPromptOptimizerMode ? `Mejorar para ${targetAI === 'chatgpt' ? 'ChatGPT' : targetAI === 'claude' ? 'Claude' : 'Gemini'}` :
+                 'Buscar Lugares'}
                 <button
                   onClick={() => {
                     setIsDeepResearch(false);
                     setIsImageGenMode(false);
+                    setIsPromptOptimizerMode(false);
+                    setIsMapsMode(false);
+                    setTargetAI(null);
                   }}
                   style={{
                     background: 'none',
@@ -989,66 +1704,176 @@ function App() {
                 )}
               </div>
 
-              {/* Sources */}
+              {/* Sources - Elegant Design */}
               {msg.role === 'model' && msg.sources && msg.sources.length > 0 && (
                 <div style={{
-                  marginTop: '8px',
-                  padding: '8px 12px',
+                  marginTop: '12px',
                   background: 'var(--bg-dark-tertiary)',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-modal)'
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-modal)',
+                  overflow: 'hidden'
                 }}>
+                  {/* Header with Google branding */}
                   <div style={{
-                    fontSize: '11px',
-                    color: 'var(--color-accent)',
-                    fontWeight: 600,
-                    marginBottom: '6px',
+                    padding: '10px 14px',
+                    borderBottom: '1px solid var(--border-modal)',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '4px'
+                    gap: '8px'
                   }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-                    </svg>
-                    {msg.sources.length} {msg.sources.length === 1 ? 'fuente revisada' : 'fuentes revisadas'}
+                    <div style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '4px',
+                      background: 'linear-gradient(135deg, #4285f4, #34a853, #fbbc05, #ea4335)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                      </svg>
+                    </div>
+                    <span style={{
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-text-primary)'
+                    }}>
+                      Fuentes
+                    </span>
+                    <span style={{
+                      fontSize: '11px',
+                      color: 'var(--color-gray-medium)',
+                      marginLeft: 'auto'
+                    }}>
+                      {msg.sources.length} {msg.sources.length === 1 ? 'resultado' : 'resultados'}
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {msg.sources.slice(0, 3).map((source, i) => (
-                      <a
-                        key={i}
-                        href={source.uri}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{
-                          fontSize: '12px',
-                          color: 'var(--color-white)',
-                          textDecoration: 'none',
-                          padding: '4px 8px',
-                          background: 'var(--bg-dark-secondary)',
-                          borderRadius: '4px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          overflow: 'hidden'
-                        }}
-                      >
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" style={{ flexShrink: 0 }}>
-                          <circle cx="12" cy="12" r="10"></circle>
-                        </svg>
-                        <span style={{ 
-                          overflow: 'hidden', 
-                          textOverflow: 'ellipsis', 
-                          whiteSpace: 'nowrap' 
-                        }}>
-                          {source.title || new URL(source.uri).hostname}
-                        </span>
-                      </a>
-                    ))}
-                    {msg.sources.length > 3 && (
-                      <span style={{ fontSize: '11px', color: 'var(--color-gray-medium)', marginLeft: '8px' }}>
-                        +{msg.sources.length - 3} fuentes más
-                      </span>
+
+                  {/* Sources List */}
+                  <div style={{ padding: '8px' }}>
+                    {msg.sources.slice(0, 6).map((source, i) => {
+                      let domain = '';
+                      try {
+                        domain = new URL(source.uri).hostname.replace('www.', '');
+                      } catch {
+                        domain = source.uri;
+                      }
+
+                      return (
+                        <a
+                          key={i}
+                          href={source.uri}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            padding: '10px 12px',
+                            borderRadius: '8px',
+                            textDecoration: 'none',
+                            transition: 'background 0.2s',
+                            marginBottom: i < Math.min(msg.sources!.length, 6) - 1 ? '4px' : '0'
+                          }}
+                          onMouseOver={(e) => {
+                            e.currentTarget.style.background = 'var(--bg-dark-secondary)';
+                          }}
+                          onMouseOut={(e) => {
+                            e.currentTarget.style.background = 'transparent';
+                          }}
+                        >
+                          {/* Favicon */}
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '8px',
+                            background: 'var(--bg-dark-secondary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            border: '1px solid var(--border-modal)'
+                          }}>
+                            <img
+                              src={`https://www.google.com/s2/favicons?domain=${source.uri}&sz=32`}
+                              alt=""
+                              style={{ width: '18px', height: '18px', borderRadius: '4px' }}
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                target.style.display = 'none';
+                              }}
+                            />
+                          </div>
+
+                          {/* Content */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: '13px',
+                              fontWeight: 500,
+                              color: 'var(--color-text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              marginBottom: '2px'
+                            }}>
+                              {source.title || domain}
+                            </div>
+                            <div style={{
+                              fontSize: '11px',
+                              color: 'var(--color-gray-medium)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: '16px',
+                                height: '16px',
+                                borderRadius: '4px',
+                                background: 'rgba(66, 133, 244, 0.15)',
+                                color: '#4285f4',
+                                fontSize: '10px',
+                                fontWeight: 600
+                              }}>
+                                {i + 1}
+                              </span>
+                              {domain}
+                            </div>
+                          </div>
+
+                          {/* Arrow */}
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="var(--color-gray-medium)"
+                            strokeWidth="2"
+                            style={{ flexShrink: 0, opacity: 0.5 }}
+                          >
+                            <line x1="7" y1="17" x2="17" y2="7"></line>
+                            <polyline points="7 7 17 7 17 17"></polyline>
+                          </svg>
+                        </a>
+                      );
+                    })}
+
+                    {/* Show more if needed */}
+                    {msg.sources.length > 6 && (
+                      <div style={{
+                        textAlign: 'center',
+                        padding: '8px',
+                        fontSize: '12px',
+                        color: 'var(--color-gray-medium)'
+                      }}>
+                        +{msg.sources.length - 6} fuentes más
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1201,6 +2026,47 @@ function App() {
           </div>
         )}
 
+        {/* Target AI Selector for Prompt Optimizer */}
+        {isPromptOptimizerMode && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginBottom: '10px',
+            padding: '10px 12px',
+            background: 'rgba(251, 191, 36, 0.1)',
+            borderRadius: '10px',
+            border: '1px solid rgba(251, 191, 36, 0.3)'
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+            <span style={{ fontSize: '12px', color: '#fbbf24', fontWeight: 500 }}>Optimizar para:</span>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {(['chatgpt', 'claude', 'gemini'] as const).map((ai) => (
+                <button
+                  key={ai}
+                  onClick={() => setTargetAI(ai)}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    border: targetAI === ai ? '1px solid #fbbf24' : '1px solid var(--border-modal)',
+                    background: targetAI === ai ? 'rgba(251, 191, 36, 0.2)' : 'transparent',
+                    color: targetAI === ai ? '#fbbf24' : 'var(--color-gray-medium)',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {ai === 'chatgpt' ? 'ChatGPT' : ai === 'claude' ? 'Claude' : 'Gemini'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Selected Context from Page */}
         {selectedContext && (
           <div style={{
@@ -1347,6 +2213,8 @@ function App() {
                   onClick={() => {
                     setIsDeepResearch(!isDeepResearch);
                     setIsImageGenMode(false);
+                    setIsPromptOptimizerMode(false);
+                    setIsMapsMode(false);
                     setIsPlusMenuOpen(false);
                   }}
                   style={{
@@ -1387,39 +2255,56 @@ function App() {
                     handleLiveToggle();
                     setIsPlusMenuOpen(false);
                   }}
+                  disabled={isLiveConnecting}
                   style={{
                     width: '100%',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '10px',
                     padding: '10px 12px',
-                    background: isLiveActive ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
+                    background: isLiveActive ? 'rgba(239, 68, 68, 0.15)' : isLiveConnecting ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
                     border: 'none',
                     borderRadius: '8px',
-                    color: isLiveActive ? '#ef4444' : 'var(--color-white)',
-                    cursor: 'pointer',
+                    color: isLiveActive ? '#ef4444' : isLiveConnecting ? '#3B82F6' : 'var(--color-white)',
+                    cursor: isLiveConnecting ? 'wait' : 'pointer',
                     fontSize: '13px',
-                    textAlign: 'left'
+                    textAlign: 'left',
+                    opacity: isLiveConnecting ? 0.7 : 1
                   }}
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={isLiveConnecting ? { animation: 'spin 1s linear infinite' } : {}}>
                     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
                     <line x1="12" y1="19" x2="12" y2="23"></line>
                     <line x1="8" y1="23" x2="16" y2="23"></line>
                   </svg>
                   <div>
-                    <div style={{ fontWeight: 500 }}>Conversación en Vivo</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>Audio en tiempo real</div>
+                    <div style={{ fontWeight: 500 }}>
+                      {isLiveConnecting ? 'Conectando...' : isLiveActive ? 'Desconectar' : 'Conversación en Vivo'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>
+                      {isLiveConnecting ? 'Estableciendo conexión' : isLiveActive ? 'Click para detener' : 'Audio en tiempo real'}
+                    </div>
                   </div>
                   {isLiveActive && (
-                    <div style={{ 
-                      marginLeft: 'auto', 
-                      width: '8px', 
-                      height: '8px', 
-                      borderRadius: '50%', 
+                    <div style={{
+                      marginLeft: 'auto',
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
                       background: '#ef4444',
                       animation: 'pulse 1s infinite'
+                    }}></div>
+                  )}
+                  {isLiveConnecting && (
+                    <div style={{
+                      marginLeft: 'auto',
+                      width: '16px',
+                      height: '16px',
+                      borderRadius: '50%',
+                      border: '2px solid #3B82F6',
+                      borderTopColor: 'transparent',
+                      animation: 'spin 1s linear infinite'
                     }}></div>
                   )}
                 </button>
@@ -1429,6 +2314,8 @@ function App() {
                   onClick={() => {
                     setIsImageGenMode(!isImageGenMode);
                     setIsDeepResearch(false);
+                    setIsPromptOptimizerMode(false);
+                    setIsMapsMode(false);
                     setIsPlusMenuOpen(false);
                   }}
                   style={{
@@ -1461,7 +2348,122 @@ function App() {
                     </svg>
                   )}
                 </button>
-                
+
+                {/* Prompt Optimizer */}
+                <button
+                  onClick={() => {
+                    if (!isPromptOptimizerMode) {
+                      setIsPromptOptimizerMode(true);
+                      setTargetAI('chatgpt'); // Default
+                    } else {
+                      setIsPromptOptimizerMode(false);
+                      setTargetAI(null);
+                    }
+                    setIsDeepResearch(false);
+                    setIsImageGenMode(false);
+                    setIsMapsMode(false);
+                    setIsPlusMenuOpen(false);
+                  }}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '10px 12px',
+                    background: isPromptOptimizerMode ? 'rgba(251, 191, 36, 0.15)' : 'transparent',
+                    border: 'none',
+                    borderRadius: '8px',
+                    color: isPromptOptimizerMode ? '#fbbf24' : 'var(--color-white)',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    textAlign: 'left'
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                  </svg>
+                  <div>
+                    <div style={{ fontWeight: 500 }}>Mejorar Prompt</div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>Optimiza para otra IA</div>
+                  </div>
+                  {isPromptOptimizerMode && (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="#fbbf24" style={{ marginLeft: 'auto' }}>
+                      <polyline points="20 6 9 17 4 12" stroke="#fbbf24" strokeWidth="2" fill="none"></polyline>
+                    </svg>
+                  )}
+                </button>
+
+                {/* Maps Mode */}
+                <button
+                  onClick={async () => {
+                    if (!isMapsMode) {
+                      // Get user location through content script (side panel can't access geolocation directly)
+                      try {
+                        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                        if (!tab?.id) {
+                          alert('No se pudo acceder a la pestaña actual. Abre una página web primero.');
+                          return;
+                        }
+
+                        // Request geolocation through content script
+                        const response = await chrome.tabs.sendMessage(tab.id, { action: 'getGeolocation' });
+
+                        if (response?.success && response.location) {
+                          setUserLocation({
+                            latitude: response.location.latitude,
+                            longitude: response.location.longitude
+                          });
+                          setIsMapsMode(true);
+                          console.log('✓ Ubicación obtenida:', response.location);
+                        } else {
+                          const errorMsg = response?.error || 'No se pudo obtener la ubicación';
+                          console.error('Error de geolocalización:', errorMsg);
+                          alert(`${errorMsg}.\n\nAsegúrate de:\n1. Estar en una página web (no chrome://)\n2. Permitir el acceso a ubicación cuando el navegador lo solicite`);
+                        }
+                      } catch (err) {
+                        console.error('Error getting location:', err);
+                        alert('No se pudo conectar con la página.\n\nPrueba:\n1. Recargar la página actual\n2. Asegurarte de no estar en una página de Chrome (chrome://)');
+                      }
+                    } else {
+                      setIsMapsMode(false);
+                      setUserLocation(null);
+                    }
+                    setIsDeepResearch(false);
+                    setIsImageGenMode(false);
+                    setIsPromptOptimizerMode(false);
+                    setIsPlusMenuOpen(false);
+                  }}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '10px 12px',
+                    background: isMapsMode ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
+                    border: 'none',
+                    borderRadius: '8px',
+                    color: isMapsMode ? '#3b82f6' : 'var(--color-white)',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    textAlign: 'left'
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                    <circle cx="12" cy="10" r="3"></circle>
+                  </svg>
+                  <div>
+                    <div style={{ fontWeight: 500 }}>Buscar Lugares</div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>Restaurantes, tiendas, etc.</div>
+                  </div>
+                  {isMapsMode && (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="#3b82f6" style={{ marginLeft: 'auto' }}>
+                      <polyline points="20 6 9 17 4 12" stroke="#3b82f6" strokeWidth="2" fill="none"></polyline>
+                    </svg>
+                  )}
+                </button>
+
                 <div style={{ height: '1px', background: 'var(--border-modal)', margin: '8px 0' }}></div>
                 
                 {/* Attach File */}
@@ -1540,7 +2542,34 @@ function App() {
                 <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>
             </button>
+          ) : isLiveActive ? (
+            /* Live Audio Mic Button */
+            <button
+              onClick={toggleLiveMicrophone}
+              style={{
+                background: isLiveMicActive ? '#10B981' : 'var(--bg-dark-tertiary)',
+                border: isLiveMicActive ? '2px solid #10B981' : 'none',
+                borderRadius: '50%',
+                width: '36px',
+                height: '36px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                animation: isLiveMicActive ? 'pulse 1.5s infinite' : 'none'
+              }}
+              title={isLiveMicActive ? 'Detener micrófono' : 'Hablar en vivo'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill={isLiveMicActive ? 'white' : 'none'} stroke={isLiveMicActive ? 'white' : 'var(--color-gray-medium)'} strokeWidth="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            </button>
           ) : (
+            /* Regular Voice Recording Button */
             <button
               onClick={isRecording ? stopVoiceRecording : startVoiceRecording}
               style={{
@@ -1566,6 +2595,606 @@ function App() {
           )}
         </div>
       </footer>
+
+      {/* Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div
+          onClick={() => setIsSidebarOpen(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            zIndex: 9998,
+            backdropFilter: 'blur(2px)'
+          }}
+        />
+      )}
+
+      {/* Sidebar Panel */}
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: isSidebarOpen ? 0 : '-300px',
+        width: '300px',
+        height: '100vh',
+        backgroundColor: 'var(--bg-dark-secondary)',
+        borderRight: '1px solid var(--border-modal)',
+        zIndex: 9999,
+        display: 'flex',
+        flexDirection: 'column',
+        transition: 'left 0.3s ease',
+        boxShadow: isSidebarOpen ? '4px 0 20px rgba(0,0,0,0.3)' : 'none'
+      }}>
+        {/* Sidebar Header */}
+        <div style={{
+          padding: '16px',
+          borderBottom: '1px solid var(--border-modal)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <img src={liaAvatar} alt="Lia" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
+            <span style={{ fontWeight: 600, color: 'var(--color-white)', fontSize: '15px' }}>Lia</span>
+          </div>
+          <button
+            onClick={() => setIsSidebarOpen(false)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--color-gray-medium)',
+              padding: '4px'
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        {/* New Chat Button */}
+        <div style={{ padding: '12px 16px' }}>
+          <button
+            onClick={createNewChat}
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              background: 'var(--color-accent)',
+              border: 'none',
+              borderRadius: '10px',
+              color: 'var(--color-on-accent)',
+              fontSize: '14px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px'
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Nueva Conversación
+          </button>
+        </div>
+
+        {/* Folders Section */}
+        <div style={{ padding: '0 16px', marginBottom: '8px' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '8px'
+          }}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-gray-medium)', textTransform: 'uppercase' }}>Proyectos</span>
+            <button
+              onClick={() => setIsFolderModalOpen(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--color-accent)',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              title="Crear proyecto"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+          </div>
+
+          {/* Folder List */}
+          {folders.map(folder => (
+            <div key={folder.id} style={{ marginBottom: '4px' }}>
+              <button
+                onClick={() => {
+                  const newExpanded = new Set(expandedFolders);
+                  if (newExpanded.has(folder.id)) {
+                    newExpanded.delete(folder.id);
+                  } else {
+                    newExpanded.add(folder.id);
+                  }
+                  setExpandedFolders(newExpanded);
+                }}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: 'var(--color-white)',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  textAlign: 'left'
+                }}
+                onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span style={{ flex: 1 }}>{folder.name}</span>
+                <svg
+                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  style={{ transform: expandedFolders.has(folder.id) ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+                >
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+
+              {/* Folder Chats */}
+              {expandedFolders.has(folder.id) && (
+                <div style={{ paddingLeft: '24px' }}>
+                  {chatHistory.filter(c => c.folderId === folder.id).map(chat => (
+                    <button
+                      key={chat.id}
+                      onClick={() => loadChat(chat)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        background: currentChatId === chat.id ? 'rgba(0, 212, 179, 0.15)' : 'transparent',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: currentChatId === chat.id ? 'var(--color-accent)' : 'var(--color-white)',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between'
+                      }}
+                      onMouseOver={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'var(--bg-dark-tertiary)'; }}
+                      onMouseOut={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chat.title}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Chat History Section */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-gray-medium)', textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
+            Historial
+          </span>
+
+          {chatHistory.filter(c => !c.folderId).map(chat => (
+            <div
+              key={chat.id}
+              onClick={() => loadChat(chat)}
+              style={{
+                padding: '10px 12px',
+                background: currentChatId === chat.id ? 'rgba(0, 212, 179, 0.15)' : 'transparent',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                marginBottom: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                transition: 'background 0.2s'
+              }}
+              onMouseOver={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'var(--bg-dark-tertiary)'; }}
+              onMouseOut={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  color: currentChatId === chat.id ? 'var(--color-accent)' : 'var(--color-white)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}>
+                  {chat.title}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)', marginTop: '2px' }}>
+                  {formatRelativeTime(chat.updatedAt)}
+                </div>
+              </div>
+              <button
+                onClick={(e) => deleteChat(chat.id, e)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--color-gray-medium)',
+                  padding: '4px',
+                  opacity: 0.6,
+                  transition: 'opacity 0.2s'
+                }}
+                onMouseOver={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = '#ef4444'; }}
+                onMouseOut={(e) => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.color = 'var(--color-gray-medium)'; }}
+                title="Eliminar conversación"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+              </button>
+            </div>
+          ))}
+
+          {chatHistory.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-gray-medium)', fontSize: '13px' }}>
+              No hay conversaciones guardadas
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar Footer - Settings & Feedback */}
+        <div style={{
+          padding: '16px',
+          borderTop: '1px solid var(--border-modal)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }}>
+          <button
+            onClick={() => {
+              setIsSettingsModalOpen(true);
+              setIsSidebarOpen(false);
+            }}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: '8px',
+              color: 'var(--color-white)',
+              fontSize: '13px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              textAlign: 'left'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            Personalizar Lia
+          </button>
+
+          <button
+            onClick={() => {
+              setFeedbackType('positive');
+              setFeedbackMessageContent('Feedback general desde sidebar');
+              setIsFeedbackModalOpen(true);
+              setIsSidebarOpen(false);
+            }}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: '8px',
+              color: 'var(--color-white)',
+              fontSize: '13px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              textAlign: 'left'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            Enviar Feedback
+          </button>
+
+          <button
+            onClick={() => {
+              signOut();
+              setIsSidebarOpen(false);
+            }}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: 'none',
+              borderRadius: '8px',
+              color: '#ef4444',
+              fontSize: '13px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              textAlign: 'left'
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+            Cerrar Sesión
+          </button>
+        </div>
+      </div>
+
+      {/* Folder Creation Modal */}
+      {isFolderModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.6)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 10001,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          <div style={{
+            width: '360px',
+            background: 'var(--bg-modal)',
+            borderRadius: '16px',
+            border: '1px solid var(--border-modal)',
+            padding: '24px',
+            boxShadow: 'var(--shadow-modal)'
+          }}>
+            <h3 style={{ color: 'var(--color-white)', fontSize: '16px', fontWeight: 600, margin: '0 0 16px 0' }}>Crear Proyecto</h3>
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="Nombre del proyecto..."
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                backgroundColor: 'var(--bg-dark-tertiary)',
+                border: '1px solid var(--border-modal)',
+                borderRadius: '8px',
+                color: 'var(--color-white)',
+                fontSize: '14px',
+                outline: 'none',
+                marginBottom: '16px',
+                boxSizing: 'border-box'
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') createFolder(); }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setIsFolderModalOpen(false); setNewFolderName(''); }}
+                style={{
+                  padding: '10px 20px',
+                  background: 'transparent',
+                  border: '1px solid var(--color-gray-medium)',
+                  borderRadius: '8px',
+                  color: 'var(--color-white)',
+                  cursor: 'pointer',
+                  fontSize: '13px'
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={createFolder}
+                disabled={!newFolderName.trim()}
+                style={{
+                  padding: '10px 20px',
+                  background: 'var(--color-accent)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: 'var(--color-on-accent)',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  opacity: newFolderName.trim() ? 1 : 0.5
+                }}
+              >
+                Crear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        user={user}
+        supabase={supabase}
+        onSave={loadUserSettings}
+      />
+
+      {/* Feedback Modal */}
+      <FeedbackModal
+        isOpen={isFeedbackModalOpen}
+        onClose={() => {
+          setIsFeedbackModalOpen(false);
+          setFeedbackType(null);
+          setFeedbackMessageContent('');
+        }}
+        type={feedbackType}
+        messageContent={feedbackMessageContent}
+        modelUsed="gemini-2.0-flash"
+        user={user}
+        supabase={supabase}
+      />
+
+      {/* Premium Model Selector Modal */}
+      {isModelSelectorOpen && (
+        <div 
+           style={{
+             position: 'fixed',
+             top: 0, 
+             left: 0, 
+             right: 0, 
+             bottom: 0,
+             background: 'rgba(0,0,0,0.6)', 
+             backdropFilter: 'blur(4px)',
+             zIndex: 9999,
+             display: 'flex',
+             alignItems: 'flex-start',
+             justifyContent: 'center',
+             paddingTop: '60px', 
+             animation: 'fadeIn 0.2s ease-out'
+           }}
+           onClick={() => setIsModelSelectorOpen(false)}
+        >
+           <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+           <div 
+             style={{
+               background: 'var(--bg-dark-secondary)',
+               border: '1px solid var(--border-modal)',
+               borderRadius: '16px',
+               width: '90%',
+               maxWidth: '400px',
+               padding: '16px',
+               boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 10px 10px -5px rgba(0, 0, 0, 0.3)',
+               maxHeight: '80vh',
+               overflowY: 'auto'
+             }}
+             onClick={(e) => e.stopPropagation()}
+           >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                 <h3 style={{ margin: 0, fontSize: '15px', color: 'var(--color-white)', fontWeight: 600 }}>Seleccionar Modelo</h3>
+                 <button 
+                   onClick={() => setIsModelSelectorOpen(false)}
+                   style={{ background: 'none', border: 'none', color: 'var(--color-gray-medium)', cursor: 'pointer', padding: '4px' }}
+                 >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                 </button>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
+                 {MODEL_OPTIONS.map((model) => {
+                    const isSelected = preferredPrimaryModel === model.id;
+                    return (
+                       <div 
+                         key={model.id}
+                         onClick={() => {
+                            handleModelChange('primary', model.id);
+                            setIsModelSelectorOpen(false);
+                         }}
+                         style={{
+                           display: 'flex',
+                           alignItems: 'center',
+                           padding: '12px',
+                           borderRadius: '12px',
+                           background: isSelected ? 'rgba(255, 255, 255, 0.05)' : 'transparent',
+                           border: `1px solid ${isSelected ? model.color || 'var(--color-accent)' : 'var(--border-modal)'}`,
+                           cursor: 'pointer',
+                           transition: 'all 0.2s',
+                           position: 'relative',
+                           overflow: 'hidden'
+                         }}
+                         onMouseOver={(e) => {
+                            if (!isSelected) {
+                               e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)';
+                               e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                            }
+                         }}
+                         onMouseOut={(e) => {
+                            if (!isSelected) {
+                               e.currentTarget.style.background = 'transparent';
+                               e.currentTarget.style.borderColor = 'var(--border-modal)';
+                            }
+                         }}
+                       >
+                          {/* Indicator Bar */}
+                          {isSelected && (
+                             <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '4px', background: model.color || 'var(--color-accent)' }}></div>
+                          )}
+
+                          {/* Icon */}
+                          <div style={{ 
+                             fontSize: '20px', 
+                             marginRight: '12px', 
+                             width: '32px', 
+                             height: '32px', 
+                             display: 'flex', 
+                             alignItems: 'center', 
+                             justifyContent: 'center',
+                             background: isSelected ? `rgba(${parseInt(model.color?.slice(1,3) || '00', 16)}, ${parseInt(model.color?.slice(3,5) || '00', 16)}, ${parseInt(model.color?.slice(5,7) || '00', 16)}, 0.15)` : 'rgba(255,255,255,0.05)',
+                             borderRadius: '8px',
+                             color: model.color
+                          }}>
+                             {model.icon}
+                          </div>
+
+                          <div style={{ flex: 1 }}>
+                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--color-white)' }}>{model.name}</span>
+                                {model.badge && (
+                                   <span style={{ 
+                                      fontSize: '9px', 
+                                      padding: '2px 6px', 
+                                      borderRadius: '4px', 
+                                      background: model.badge === 'Pro' ? 'linear-gradient(45deg, #A855F7, #EC4899)' : (model.badge === 'Nuevo' ? 'var(--color-accent)' : 'rgba(255,255,255,0.1)'), 
+                                      color: model.badge === 'Nuevo' ? 'black' : 'white',
+                                      fontWeight: 600,
+                                      textTransform: 'uppercase'
+                                   }}>
+                                      {model.badge}
+                                   </span>
+                                )}
+                             </div>
+                             <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>
+                                {model.desc}
+                             </div>
+                          </div>
+
+                          {isSelected && (
+                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={model.color || 'var(--color-accent)'} strokeWidth="2.5" style={{ marginLeft: '8px' }}>
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                             </svg>
+                          )}
+                       </div>
+                    );
+                 })}
+              </div>
+           </div>
+        </div>
+      )}
 
       {/* Zoomed Image Modal */}
       {zoomedImage && (

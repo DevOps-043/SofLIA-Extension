@@ -116,6 +116,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     sendResponse({ success: true });
   }
+
+  if (message.type === 'TEXT_SELECTED') {
+    // Update pending selection without opening panel
+    pendingSelection = {
+      action: 'preview', // Default action
+      text: message.text,
+      prompt: ''
+    };
+    
+    // Notify popup if it's open
+    chrome.runtime.sendMessage({ 
+      type: 'SELECTION_UPDATED',
+      text: message.text,
+      action: 'preview'
+    }).catch(() => {
+      // Popup closed, expected
+    });
+    
+    sendResponse({ success: true });
+  }
   
   if (message.type === 'GET_PENDING_SELECTION') {
     const selection = pendingSelection;

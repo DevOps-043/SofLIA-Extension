@@ -4,7 +4,13 @@
       "WebFetch(domain:ai.google.dev)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:skywork.ai)",
-      "WebFetch(domain:docs.cloud.google.com)"
+      "WebFetch(domain:docs.cloud.google.com)",
+      "Bash(findstr:*)",
+      "Bash(npm install)",
+      "Bash(npm view:*)",
+      "Bash(npm run build:*)",
+      "Bash(cmd /c \"type .env\")",
+      "Bash(git checkout:*)"
     ]
   }
 }

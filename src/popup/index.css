@@ -50,10 +50,13 @@ html[data-theme="light"] {
 }
 
 html[data-theme="dark"] {
-  --bg-modal: #1a1a2e;
-  --border-modal: #2d2d44;
+  --bg-dark-main: #0f1419;
+  --bg-dark-secondary: #1e2329;
+  --bg-dark-tertiary: #0a0d12;
+  --bg-modal: #1e2329;
+  --border-modal: rgba(255, 255, 255, 0.1);
   --shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --color-on-accent: #000000; /* Black text on bright green accent */
+  --color-on-accent: #000000;
 }
 /* Default fallback */
   /* Create a new :root block or merge with existing? Safer to just update the existing :root at the top and remove the bottom one */

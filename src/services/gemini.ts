@@ -1,38 +1,30 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GOOGLE_API_KEY, MODELS } from "../config";
+import {
+  buildComputerUsePrompt,
+  buildPrimaryChatPrompt,
+  PRIMARY_CHAT_PROMPT,
+  DEEP_RESEARCH_PROMPT,
+  PROMPT_OPTIMIZER,
+  AUDIO_TRANSCRIPTION_PROMPT,
+  getImageGenerationPrompt,
+  needsComputerUse
+} from "../prompts";
 
 const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
 
-const navigationTool = {
-  functionDeclarations: [
-    {
-      name: "open_url",
-      description: "Opens a URL in a new browser tab. CRITICAL: Use this tool whenever the user asks to 'go to', 'navigate to', 'take me to', 'open', or 'visit' a specific website or page. You must find the correct URL first if not provided.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          url: {
-            type: "STRING",
-            description: "The full URL to open (must start with http:// or https://).",
-          },
-        },
-        required: ["url"],
-      },
-    },
-  ],
-};
-
-const primaryTools: any[] = [
+// Gemini 3 no soporta googleSearch + functionDeclarations juntos (error 400)
+// Solo Google Search como tool para los modelos primario y deep research
+const searchTools: any[] = [
   { googleSearch: {} },
-  navigationTool,
 ];
 
 
 // Model Instances
 const primaryModel = genAI.getGenerativeModel({
   model: MODELS.PRIMARY,
-  tools: primaryTools,
+  tools: searchTools,
 });
 
 // Computer Use Model - para acciones en página (sin Google Search para evitar conflictos)
@@ -40,28 +32,6 @@ const computerUseModel = genAI.getGenerativeModel({
   model: MODELS.COMPUTER_USE,
 });
 
-// Helper para detectar si necesita Computer Use (acciones en página)
-const needsComputerUse = (prompt: string): boolean => {
-  const keywords = [
-    // Acciones de click
-    'click', 'clic', 'pulsa', 'presiona', 'haz click', 'haz clic', 'dale click',
-    // Acciones de escritura
-    'escribe', 'type', 'escribir', 'teclea', 'pon', 'ingresa',
-    // Acciones de scroll
-    'scroll', 'desplaza', 'baja', 'sube',
-    // Acciones de selección
-    'selecciona', 'marca', 'desmarca', 'elige',
-    // Acciones de formulario
-    'rellena', 'completa el formulario',
-    // Navegación en página
-    'llévame', 'llevame', 'ir a', 've a', 'abre', 'abrir', 'visita', 'entra',
-    'navega', 'muévete', 'muevete', 'dirígete', 'dirigete',
-    // Interacción general
-    'interactúa', 'interactua', 'hazlo', 'ejecuta'
-  ];
-  const lowerPrompt = prompt.toLowerCase();
-  return keywords.some(k => lowerPrompt.includes(k));
-};
 
 // Image Generation Model - just get the model without special config
 const imageGenerationModel = genAI.getGenerativeModel({ 
@@ -69,9 +39,14 @@ const imageGenerationModel = genAI.getGenerativeModel({
 });
 
 // Deep Research Model
-const deepResearchModel = genAI.getGenerativeModel({ 
+const deepResearchModel = genAI.getGenerativeModel({
   model: MODELS.DEEP_RESEARCH,
-  tools: primaryTools,
+  tools: searchTools,
+});
+
+// PRO Model for Prompt Engineering
+const proModel = genAI.getGenerativeModel({
+  model: (MODELS as any).PRO || "gemini-2.5-pro",
 });
 
 let chatSession: any = null;
@@ -89,20 +64,11 @@ export const runDeepResearch = async (prompt: string) => {
       history: [
         {
           role: "user",
-          parts: [{ text: `Eres un experto investigador. Tu tarea es realizar una investigación profunda, exhaustiva y detallada sobre el tema que te solicite el usuario.
-          
-          Instrucciones:
-          1. Investiga a fondo utilizando múltiples fuentes (usa Google Search libremente).
-          2. Estructura tu respuesta como un reporte profesional.
-          3. Incluye secciones claras: Introducción, Hallazgos Principales, Detalles Técnicos/Específicos, Conclusiones.
-          4. Cita TODAS tus fuentes al final o en el texto.
-          5. Sé objetivo y analítico.
-          
-          Procederé con mi solicitud ahora.` }]
+          parts: [{ text: DEEP_RESEARCH_PROMPT.user }]
         },
         {
           role: "model",
-          parts: [{ text: "Entendido. Estoy listo para realizar una investigación profunda y exhaustiva sobre el tema que necesites, utilizando herramientas de búsqueda para proporcionar un reporte detallado y bien fundamentado con fuentes verificables. Por favor, indícame el tema a investigar." }]
+          parts: [{ text: DEEP_RESEARCH_PROMPT.model }]
         }
       ]
     });
@@ -137,9 +103,8 @@ export const runDeepResearch = async (prompt: string) => {
 export const generateImage = async (prompt: string): Promise<{ text: string; imageData?: string }> => {
   try {
     console.log("Generating image with prompt:", prompt);
-    
-    const enhancedPrompt = `Genera una imagen profesional y de alta calidad basada en: ${prompt}. 
-    La imagen debe ser visualmente atractiva y relevante al tema solicitado.`;
+
+    const enhancedPrompt = getImageGenerationPrompt(prompt);
     
     // Use generateContent with responseModalities in the request
     const result = await (imageGenerationModel as any).generateContent({
@@ -188,92 +153,80 @@ export const startChatSession = (history: any[] = []) => {
   return chatSession;
 };
 
-export const sendMessageStream = async (message: string, context?: string) => {
-  if (!chatSession) {
-    startChatSession();
+export async function sendMessageStream(
+  message: string, 
+  context?: string, 
+  modelOverrides?: { primary?: string; fallback?: string },
+  personalization?: {
+    nickname?: string;
+    occupation?: string;
+    tone?: string;
+    about?: string;
+    instructions?: string;
+  },
+  projectContext?: string
+) {
+  // Determine IDs
+  const primaryId = modelOverrides?.primary || MODELS.PRIMARY;
+  const fallbackId = modelOverrides?.fallback || MODELS.FALLBACK;
+  
+  // Detect Computer Use
+  const useComputerUse = needsComputerUse(message);
+  
+  // Decide active model
+  const activeModelId = useComputerUse ? MODELS.COMPUTER_USE : primaryId;
+
+  // Build Personalized System Instruction
+  let systemInstruction = PRIMARY_CHAT_PROMPT;
+  
+  if (!useComputerUse && personalization) {
+      let personality = "\n\n=== USER PERSONALIZATION SETTINGS ===\n";
+      if (personalization.nickname) personality += `User's Name/Nickname: "${personalization.nickname}". Address them by this name occasionally.\n`;
+      if (personalization.occupation) personality += `User's Occuption/Role: ${personalization.occupation}. Adapt analogies and complexity to this role.\n`;
+      if (personalization.tone) personality += `Response Tone/Style: ${personalization.tone}.\n`;
+      if (personalization.about) personality += `More about User: ${personalization.about}\n`;
+      if (personalization.instructions) personality += `CUSTOM INSTRUCTIONS (PRIORITY): ${personalization.instructions}\n`;
+      personality += "=====================================\n";
+      
+      systemInstruction = systemInstruction + personality;
   }
 
-  // Detectar si necesita interacción con la página (Computer Use)
-  const useComputerUse = needsComputerUse(message);
+  // Inject Project Context if available
+  if (projectContext) {
+      systemInstruction += `\n\n=== PROJECT CONTEXT (SHARED KNOWLEDGE) ===\nThe user has grouped this chat in a project folder. Here is relevant context from other chats in the same project:\n\n${projectContext}\n\nUse this information to provide more cohesive and context-aware responses across the project.\n==========================================\n`;
+  }
+
+  // Initialize specific model instance dynamically
+  const activeModelInstance = useComputerUse 
+    ? computerUseModel 
+    : genAI.getGenerativeModel({ 
+        model: activeModelId,
+        tools: searchTools, // Assuming primary/chosen model supports search
+        systemInstruction: systemInstruction 
+      });
 
   console.log('=== GEMINI SERVICE ===');
-  console.log('Mensaje recibido:', message);
-  console.log('¿Necesita Computer Use?:', useComputerUse);
-  console.log('Modelo a usar:', useComputerUse ? MODELS.COMPUTER_USE : MODELS.PRIMARY);
+  console.log('Model:', activeModelId);
+  console.log('Personalization:', !!personalization);
 
+  // Handle Session Logic - ALWAYS refresh session to apply system prompt updates or model changes
+  let currentHistory: any[] = [];
+  if (chatSession) {
+    try { currentHistory = await chatSession.getHistory(); } catch {}
+  }
+  
+  // Start fresh session with history to ensure new System Prompt applies
+  chatSession = activeModelInstance.startChat({
+     history: currentHistory,
+     generationConfig: { maxOutputTokens: 2000 }
+  });
+
+  // Build Prompt
   let prompt = message;
   if (context) {
-    let systemPrompt: string;
-
-    if (useComputerUse) {
-      // Prompt para COMPUTER USE - con acciones [ACTION:...], sin Google Search
-      systemPrompt = `Eres Lia, un asistente que CONTROLA el navegador del usuario. DEBES EJECUTAR acciones, NO solo describirlas.
-
-## COMANDOS DE ACCIÓN (se ejecutan automáticamente):
-- [ACTION:click:INDEX] - Click en elemento
-- [ACTION:type:INDEX:texto] - Escribir texto
-- [ACTION:scroll:INDEX] - Scroll hacia elemento
-
-## REGLAS CRÍTICAS:
-1. EJECUTA la acción INMEDIATAMENTE. NO analices, NO planifiques, NO describas - HAZLO.
-2. Busca el elemento en el contexto DOM por su índice [0], [1], [2]...
-3. Responde CORTO: "Hecho. [ACTION:click:X]" o similar.
-4. Si te piden ir a algún lugar de la página, haz CLICK en el enlace/botón correspondiente.
-
-## Ejemplos de respuestas CORRECTAS:
-- Usuario: "Llévame al correo" → "Abriendo tu correo [ACTION:click:37]"
-- Usuario: "Haz click en buscar" → "Listo [ACTION:click:5]"
-- Usuario: "Escribe hola" → "Escribiendo [ACTION:type:3:hola]"
-
-## Ejemplos de respuestas INCORRECTAS (NO hagas esto):
-- "Voy a analizar la página..."
-- "El plan sería hacer click en..."
-- "Podría usar open_url para..."
-
-## Contexto DOM (elementos con índices):
-${context}
-
-## Usuario:`;
-    } else {
-      // Prompt para MODELO PRIMARIO - con Google Search, sin acciones [ACTION:...]
-      systemPrompt = `Eres Lia, un asistente de productividad amigable integrado en un navegador web.
-
-## Tu Personalidad:
-- Eres amable, profesional y concisa
-- Respondes en español a menos que te pidan otro idioma
-- Das respuestas directas y útiles sin información innecesaria
-- SIEMPRE usa Google Search para fundamentar tus respuestas con fuentes actualizadas
-
-## Reglas IMPORTANTES:
-1. Tienes la capacidad de NAVEGAR a sitios web usando la herramienta 'open_url'. Si el usuario te pide "llévame a", "abre", "ir a" o "visita" un sitio, USA la herramienta 'open_url' inmediatamente.
-2. NO uses formato [ACTION:...] en tus respuestas.
-3. Solo responde a lo que el usuario pregunta.
-4. Busca información relevante en Google para dar respuestas completas y actualizadas.
-
-## Contexto de la Página (solo para referencia):
-${context}
-
-## Mensaje del Usuario:`;
-    }
-
-    prompt = `${systemPrompt}\n${message}`;
-  }
-
-  if (useComputerUse) {
-    console.log("Detectada acción en página, usando modelo Computer Use (gemini-2.0-flash-exp)...");
-    const currentHistory = await chatSession.getHistory();
-    chatSession = computerUseModel.startChat({
-      history: currentHistory,
-    });
-  } else {
-    // Asegurar que usamos el modelo primario si no necesitamos computer use
-    const currentHistory = await chatSession.getHistory();
-    chatSession = primaryModel.startChat({
-      history: currentHistory,
-      generationConfig: {
-        maxOutputTokens: 2000,
-      },
-    });
+    prompt = useComputerUse 
+      ? buildComputerUsePrompt(context, message) 
+      : buildPrimaryChatPrompt(context, message);
   }
 
   try {
@@ -281,50 +234,34 @@ ${context}
       const result = await chatSession.sendMessageStream(prompt);
       return {
         stream: result.stream,
+        response: result.response,
         getGroundingMetadata: async () => {
-          try {
-            const response = await result.response;
-            const candidate = response.candidates?.[0];
-            if (candidate?.groundingMetadata) {
-              return candidate.groundingMetadata;
-            }
-            return null;
-          } catch {
-            return null;
-          }
+             try {
+                const r = await result.response;
+                return r.candidates?.[0]?.groundingMetadata || null;
+             } catch { return null; }
         }
       };
     } catch (primaryError) {
-      console.warn(`Model failed, trying fallback...`, primaryError);
+      console.warn(`Primary model (${activeModelId}) failed, trying fallback (${fallbackId})...`, primaryError);
 
-      // Si estamos en modo Computer Use, no usar fallback con herramientas
+      if (useComputerUse) throw primaryError; // No fallback for computer use
+
       const history = await chatSession.getHistory();
-
-      // Usar modelo sin herramientas para fallback
-      const simpleFallback = genAI.getGenerativeModel({
-        model: MODELS.FALLBACK,
-      });
-
-      const fallbackChat = simpleFallback.startChat({
-        history: history,
-      });
-
-      chatSession = fallbackChat;
+      const fallbackInstance = genAI.getGenerativeModel({ model: fallbackId });
+      
+      const fallbackChat = fallbackInstance.startChat({ history });
+      chatSession = fallbackChat; // Update global session
 
       const result = await fallbackChat.sendMessageStream(prompt);
       return {
         stream: result.stream,
+        response: result.response,
         getGroundingMetadata: async () => {
-          try {
-            const response = await result.response;
-            const candidate = response.candidates?.[0];
-            if (candidate?.groundingMetadata) {
-              return candidate.groundingMetadata;
-            }
-            return null;
-          } catch {
-            return null;
-          }
+             try {
+                const r = await result.response;
+                return r.candidates?.[0]?.groundingMetadata || null;
+             } catch { return null; }
         }
       };
     }
@@ -352,3 +289,213 @@ export interface GroundingMetadata {
   }>;
   webSearchQueries?: string[];
 }
+
+// Types for Maps Grounding
+export interface MapPlace {
+  placeId?: string;
+  name: string;
+  address?: string;
+  rating?: number;
+  uri?: string;
+}
+
+export interface MapsGroundingMetadata {
+  groundingChunks?: Array<{
+    web?: {
+      uri: string;
+      title: string;
+    };
+    retrievedContext?: {
+      uri: string;
+      title: string;
+    };
+  }>;
+  groundingSupports?: Array<{
+    segment: {
+      startIndex: number;
+      endIndex: number;
+      text: string;
+    };
+    groundingChunkIndices: number[];
+  }>;
+  googleMapsWidgetContextToken?: string;
+}
+
+// Maps Grounding Function
+export const runMapsQuery = async (
+  prompt: string,
+  location: { latitude: number; longitude: number }
+): Promise<{
+  text: string;
+  places: MapPlace[];
+  widgetToken?: string;
+}> => {
+  try {
+    console.log("Starting Maps Query with prompt:", prompt);
+    console.log("Location:", location);
+
+    // Crear modelo con Maps Grounding - IMPORTANTE: Gemini 3 NO soporta Maps
+    // Debemos usar Gemini 2.5 o 2.0
+    const mapsModel = genAI.getGenerativeModel({
+      model: MODELS.FALLBACK, // gemini-2.5-flash que sí soporta Maps
+    });
+
+    // Usar generateContent con la configuración de Maps
+    const result = await (mapsModel as any).generateContent({
+      contents: [{
+        role: "user",
+        parts: [{
+          text: `Eres un asistente de ubicaciones. Responde en español de forma útil y concisa.
+
+Pregunta del usuario: ${prompt}
+
+Proporciona información relevante sobre los lugares, incluyendo:
+- Nombre del lugar
+- Dirección aproximada
+- Por qué es una buena opción
+- Horarios si es relevante`
+        }]
+      }],
+      tools: [{ googleMaps: {} }],
+      toolConfig: {
+        retrievalConfig: {
+          latLng: {
+            latitude: location.latitude,
+            longitude: location.longitude
+          }
+        }
+      }
+    });
+
+    const response = result.response;
+    const candidate = response.candidates?.[0];
+
+    let textResponse = '';
+    const places: MapPlace[] = [];
+    let widgetToken: string | undefined;
+
+    // Extraer texto
+    if (candidate?.content?.parts) {
+      for (const part of candidate.content.parts) {
+        if (part.text) {
+          textResponse += part.text;
+        }
+      }
+    }
+
+    // Extraer metadata de grounding (lugares)
+    if (candidate?.groundingMetadata) {
+      const metadata = candidate.groundingMetadata as MapsGroundingMetadata;
+
+      // Token para widget de Maps
+      widgetToken = metadata.googleMapsWidgetContextToken;
+
+      // Extraer lugares de los chunks
+      if (metadata.groundingChunks) {
+        for (const chunk of metadata.groundingChunks) {
+          if (chunk.retrievedContext || chunk.web) {
+            const source = chunk.retrievedContext || chunk.web;
+            if (source) {
+              places.push({
+                name: source.title || 'Lugar',
+                uri: source.uri,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    console.log("Maps Query completed. Places found:", places.length);
+
+    return {
+      text: textResponse || 'No encontré información sobre lugares cercanos.',
+      places,
+      widgetToken
+    };
+
+  } catch (error) {
+    console.error("Maps Query error:", error);
+    throw error;
+  }
+};
+
+// Keywords para detectar consultas de Maps/Ubicación
+export const MAPS_KEYWORDS = [
+  // Búsqueda de lugares
+  'cerca', 'cercano', 'cercana', 'cercanos', 'cercanas',
+  'donde hay', 'dónde hay', 'donde encuentro', 'dónde encuentro',
+  'donde queda', 'dónde queda', 'donde está', 'dónde está',
+  // Tipos de lugares
+  'restaurante', 'restaurantes', 'cafe', 'café', 'cafetería', 'cafeterias',
+  'tienda', 'tiendas', 'supermercado', 'supermercados',
+  'farmacia', 'farmacias', 'hospital', 'hospitales', 'clínica', 'clinica',
+  'banco', 'bancos', 'cajero', 'cajeros', 'atm',
+  'gasolinera', 'gasolineras', 'estación de servicio',
+  'estacionamiento', 'parking', 'parqueo',
+  'hotel', 'hoteles', 'hostal', 'hospedaje',
+  'gimnasio', 'gimnasios', 'gym',
+  'parque', 'parques', 'plaza', 'plazas',
+  'cine', 'cines', 'teatro', 'teatros',
+  'bar', 'bares', 'antro', 'club', 'discoteca',
+  // Servicios
+  'mecánico', 'mecanico', 'taller', 'talleres',
+  'veterinaria', 'veterinario', 'pet shop',
+  'barbería', 'barberia', 'peluquería', 'peluqueria', 'salón', 'salon',
+  'dentista', 'doctor', 'médico', 'medico',
+  // Comida específica
+  'pizza', 'pizzería', 'pizzeria', 'hamburguesa', 'hamburguesas',
+  'tacos', 'taquería', 'taqueria', 'sushi', 'comida china', 'comida japonesa',
+  'comida italiana', 'comida mexicana', 'mariscos',
+  // Acciones de ubicación
+  'llegar a', 'cómo llego', 'como llego', 'ruta a', 'ruta hacia',
+  'direcciones a', 'indicaciones a', 'camino a',
+  // Distancia/tiempo
+  'minutos caminando', 'minutos en carro', 'minutos en auto',
+  'a pie', 'caminando', 'en bicicleta', 'en coche', 'en carro',
+  // Preguntas de ubicación
+  'qué hay cerca', 'que hay cerca', 'lugares cerca', 'sitios cerca',
+  'recomendaciones cerca', 'opciones cerca'
+];
+
+// Detectar si necesita Maps Grounding
+export const needsMapsGrounding = (prompt: string): boolean => {
+  const lowerPrompt = prompt.toLowerCase();
+  return MAPS_KEYWORDS.some(keyword => lowerPrompt.includes(keyword));
+};
+
+export const optimizePrompt = async (originalPrompt: string, targetAI: 'chatgpt' | 'claude' | 'gemini'): Promise<string> => {
+  const systemInstruction = PROMPT_OPTIMIZER[targetAI];
+
+  try {
+    const result = await proModel.generateContent({
+      contents: [
+        { role: "user", parts: [{ text: `${systemInstruction}\n\nPROMPT ORIGINAL (A optimizar):\n"${originalPrompt}"\n\nGenera SOLAMENTE el prompt optimizado final:` }] }
+      ]
+    });
+    
+    return result.response.text();
+  } catch (error) {
+    console.error("Error optimizing prompt:", error);
+    throw error;
+  }
+};
+
+export const transcribeAudio = async (base64Audio: string): Promise<string> => {
+  try {
+    // Usamos el modelo primario que debe ser capaz de multimodalidad (Gemini 1.5/2.0 Flash)
+    const result = await primaryModel.generateContent({
+      contents: [{
+        role: "user",
+        parts: [
+          { inlineData: { mimeType: "audio/webm", data: base64Audio } },
+          { text: AUDIO_TRANSCRIPTION_PROMPT }
+        ]
+      }]
+    });
+    return result.response.text();
+  } catch (error) {
+    console.error("Audio transcription error:", error);
+    throw error;
+  }
+};

@@ -18,15 +18,400 @@ function getVisibleText(element: Element): string {
   return text.substring(0, 150);
 }
 
+function getActiveConversation(): string | null {
+  // Strategy: Find individual message elements and extract their text.
+  // This avoids capturing UI elements from the sidebar/navigation.
+
+  console.log('=== LIA: Buscando conversación activa ===');
+
+  // MÉTODO 0: Extraer mensajes individuales buscando elementos con timestamps
+  // En Google Chat, los mensajes tienen timestamps como "24 min", "hace 2 horas", etc.
+  const extractMessagesFromChat = (): string | null => {
+    const messages: string[] = [];
+
+    // Buscar todos los elementos que podrían ser mensajes
+    const allElements = document.querySelectorAll('div, span');
+
+    // Regex más flexible para timestamps (no requiere que sea el texto COMPLETO)
+    const timestampRegex = /\d+\s*(min|hora|hour|seg|sec|día|day)s?|\d{1,2}:\d{2}|hace\s+\d|ayer|yesterday|hoy|today/i;
+
+    const foundTimestamps = new Set<Element>();
+
+    // Primero, encontrar todos los timestamps
+    for (const el of allElements) {
+      const text = el.textContent?.trim() || '';
+      // Solo elementos pequeños que contengan timestamps
+      if (text.length > 0 && text.length < 50 && timestampRegex.test(text)) {
+        // Verificar que el elemento sea pequeño (no un contenedor grande)
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 200 && rect.height < 50) {
+          foundTimestamps.add(el);
+        }
+      }
+    }
+
+    console.log('Timestamps encontrados:', foundTimestamps.size);
+
+    if (foundTimestamps.size > 2) {
+      // Hay timestamps, intentar extraer mensajes cerca de ellos
+      for (const timestamp of foundTimestamps) {
+        // Buscar el contenedor padre que tiene el mensaje
+        let parent = timestamp.parentElement;
+        for (let i = 0; i < 8 && parent; i++) {
+          const rect = parent.getBoundingClientRect();
+          // Contenedor de mensaje típico: ancho medio, no muy alto
+          if (rect.width > 100 && rect.width < 800 && rect.height > 20 && rect.height < 500) {
+            const text = parent.textContent?.trim() || '';
+            // Filtrar textos que parecen ser mensajes (no UI)
+            if (text.length > 10 && text.length < 3000 &&
+                !text.includes('Buscar en el chat') && !text.includes('Nuevo chat') &&
+                !text.includes('Página principal') && !text.includes('Atajos') &&
+                !text.includes('Mensajes directos') && !text.includes('Espacios') &&
+                !text.includes('Google Drive') && !text.includes('Explorar espacios')) {
+              if (!messages.some(m => m.includes(text) || text.includes(m))) {
+                messages.push(text);
+              }
+            }
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+
+    // Deduplicar mensajes (algunos pueden estar anidados)
+    const uniqueMessages = messages.filter((msg, idx) => {
+      for (let i = 0; i < messages.length; i++) {
+        if (i !== idx && messages[i].includes(msg) && messages[i].length > msg.length) {
+          return false; // Este mensaje está contenido en otro más largo
+        }
+      }
+      return true;
+    });
+
+    if (uniqueMessages.length > 2) {
+      console.log('✓ Extraídos', uniqueMessages.length, 'mensajes por método de timestamps');
+      return `[CONVERSACIÓN ACTIVA - ${uniqueMessages.length} mensajes]\n${uniqueMessages.join('\n---\n')}`;
+    }
+
+    return null;
+  };
+
+  // Intentar extraer mensajes primero
+  const extractedMessages = extractMessagesFromChat();
+  if (extractedMessages) {
+    return extractedMessages;
+  }
+
+  // MÉTODO 0.5: Buscar contenedor scrolleable que NO sea el sidebar
+  // El sidebar está a la izquierda (left < 300), el chat está a la derecha
+  const scrollableContainers = document.querySelectorAll('div');
+  for (const container of scrollableContainers) {
+    const style = window.getComputedStyle(container);
+    const rect = container.getBoundingClientRect();
+
+    // Buscar divs scrolleables que estén en la parte derecha/centro de la pantalla
+    if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+        rect.left > 250 && // No es el sidebar izquierdo
+        rect.width > 300 &&
+        rect.height > 200) {
+
+      const text = container.textContent?.trim() || '';
+
+      // Verificar que contenga timestamps (indicador de chat)
+      if ((text.includes('min') || text.includes('hora') || text.includes(':')) && text.length > 100) {
+        // Filtrar texto de UI
+        const cleanText = text
+          .split('\n')
+          .filter(line => {
+            const l = line.trim();
+            // Filtrar líneas de navegación/UI
+            return l.length > 0 &&
+                   !l.match(/^(Mail|Chat|Spaces|Meet|Atajos|Página principal|Menciones|Destacadas|Mensajes directos|Espacios|Apps|Nuevo chat|Buscar)$/i) &&
+                   l.length < 1000;
+          })
+          .join('\n');
+
+        if (cleanText.length > 100) {
+          console.log('✓ Encontrado contenedor scrolleable:', cleanText.length, 'chars, left:', rect.left);
+          return `[CONVERSACIÓN ACTIVA]\n${cleanText.substring(0, 15000)}`;
+        }
+      }
+    }
+  }
+
+  // MÉTODO 1: Buscar por aria-label que mencione "mensaje", "chat", "conversación"
+  const ariaSelectors = [
+    '[aria-label*="mensaje" i]',
+    '[aria-label*="message" i]',
+    '[aria-label*="chat" i]',
+    '[aria-label*="conversación" i]',
+    '[aria-label*="conversation" i]',
+  ];
+
+  for (const selector of ariaSelectors) {
+    try {
+      const els = document.querySelectorAll(selector);
+      for (const el of els) {
+        const rect = el.getBoundingClientRect();
+        // Panel grande y visible
+        if (rect.width > 200 && rect.height > 200 && rect.top < window.innerHeight) {
+          const text = el.textContent?.trim() || '';
+          if (text.length > 100) {
+            console.log('✓ Encontrado por aria-label:', selector, text.length, 'chars');
+            return `[CONVERSACIÓN ACTIVA]\n${text.substring(0, 15000)}`;
+          }
+        }
+      }
+    } catch (e) { /* skip invalid selectors */ }
+  }
+
+  // MÉTODO 2: Buscar el campo de entrada de chat y subir al contenedor padre
+  // En Google Chat, el input tiene aria-label específico o es contenteditable
+  const inputSelectors = [
+    '[contenteditable="true"]',
+    '[role="textbox"]',
+    'textarea',
+    '[aria-label*="Escribe" i]',
+    '[aria-label*="Type" i]',
+    '[aria-label*="mensaje" i]',
+  ];
+
+  for (const selector of inputSelectors) {
+    try {
+      const inputs = document.querySelectorAll(selector);
+      for (const input of inputs) {
+        const inputRect = input.getBoundingClientRect();
+        // El input debe ser visible y razonable en tamaño
+        if (inputRect.width < 100 || inputRect.height < 20) continue;
+        if (inputRect.top < 0 || inputRect.top > window.innerHeight) continue;
+
+        console.log('Encontrado input:', selector, 'en posición', inputRect.top, inputRect.left);
+
+        // Subir por los padres buscando un contenedor con suficiente contenido
+        let container = input.parentElement;
+        for (let level = 0; level < 25 && container; level++) {
+          const rect = container.getBoundingClientRect();
+          const text = container.textContent?.trim() || '';
+
+          // Log para debugging
+          if (level % 5 === 0) {
+            console.log(`  Nivel ${level}: ${container.tagName}, ${text.length} chars, ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+          }
+
+          // Buscar un contenedor que:
+          // - Sea lo suficientemente grande (ancho > 200, alto > 150)
+          // - Tenga suficiente texto (> 150 caracteres - muy reducido)
+          // - Esté visible en pantalla
+          if (rect.width > 200 && rect.height > 150 && text.length > 150) {
+            // Verificar que no sea el body o html
+            if (container.tagName !== 'BODY' && container.tagName !== 'HTML') {
+              // Verificar que tenga una estructura de chat (múltiples líneas de texto)
+              const lineBreaks = (text.match(/\n/g) || []).length;
+              const hasMultipleMessages = lineBreaks > 2 || text.includes('min') || text.includes('hora');
+
+              if (hasMultipleMessages || text.length > 300) {
+                console.log('✓ Encontrado contenedor de chat en nivel', level, ':', text.length, 'chars');
+                return `[CONVERSACIÓN ACTIVA]\n${text.substring(0, 15000)}`;
+              }
+            }
+          }
+          container = container.parentElement;
+        }
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  // MÉTODO 3: Buscar paneles que tengan un botón de cerrar (X) - típico de ventanas de chat
+  // MEJORADO: Extraer solo el contenido del área de mensajes, no todo el panel
+  const closeButtons = document.querySelectorAll('[aria-label*="Cerrar" i], [aria-label*="Close" i], [data-tooltip*="Cerrar" i]');
+  for (const btn of closeButtons) {
+    const btnRect = btn.getBoundingClientRect();
+    // Solo botones en la parte derecha de la pantalla (no sidebar)
+    if (btnRect.left < 250) continue;
+
+    // Subir al contenedor padre que probablemente es el panel de chat
+    let panel = btn.parentElement;
+    for (let i = 0; i < 10 && panel; i++) {
+      const rect = panel.getBoundingClientRect();
+
+      // Panel de chat típico: ancho moderado (no toda la página), en la parte derecha
+      if (rect.width > 300 && rect.width < 900 && rect.height > 200 && rect.left > 200) {
+        // Buscar dentro del panel un área scrolleable que contenga los mensajes
+        const scrollAreas = panel.querySelectorAll('div');
+        for (const area of scrollAreas) {
+          const areaStyle = window.getComputedStyle(area);
+          const areaRect = area.getBoundingClientRect();
+
+          // Área scrolleable dentro del panel
+          if ((areaStyle.overflowY === 'auto' || areaStyle.overflowY === 'scroll') &&
+              areaRect.height > 150 && areaRect.width > 200) {
+            const areaText = area.textContent?.trim() || '';
+
+            // Filtrar elementos de UI del texto
+            const cleanedText = areaText
+              .split('\n')
+              .map(line => line.trim())
+              .filter(line => {
+                if (line.length === 0) return false;
+                if (line.length > 1500) return false; // Líneas muy largas son probablemente contenedores
+                // Filtrar elementos de navegación conocidos
+                const uiPatterns = /^(Mail|Chat|Spaces|Meet|Atajos|Página principal|Menciones|Destacadas|Mensajes directos|Espacios|Apps|Nuevo chat|Buscar|Google Drive|Explorar espacios|Administrador|Agente Web|Ecos de liderazgo|Ecos_Devops|Aprende y Aplica|El historial está activado)$/i;
+                return !uiPatterns.test(line);
+              })
+              .join('\n');
+
+            if (cleanedText.length > 100 && (cleanedText.includes('min') || cleanedText.includes('hora') || cleanedText.includes(':'))) {
+              console.log('✓ Encontrado área de mensajes dentro del panel:', cleanedText.length, 'chars (de', areaText.length, 'original)');
+              return `[CONVERSACIÓN ACTIVA]\n${cleanedText.substring(0, 15000)}`;
+            }
+          }
+        }
+
+        // Fallback: usar el panel completo pero filtrar
+        const text = panel.textContent?.trim() || '';
+        if (text.includes('min') || text.includes('hora') || text.includes(':')) {
+          const cleanedText = text
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => {
+              if (line.length === 0 || line.length > 1500) return false;
+              const uiPatterns = /^(Mail|Chat|Spaces|Meet|Atajos|Página principal|Menciones|Destacadas|Mensajes directos|Espacios|Apps|Nuevo chat|Buscar|Google Drive|Explorar espacios|Administrador|Agente Web|Ecos|El historial está activado|Unirse|Videoconferencia)$/i;
+              return !uiPatterns.test(line);
+            })
+            .join('\n');
+
+          if (cleanedText.length > 100) {
+            console.log('✓ Encontrado panel con botón cerrar (filtrado):', cleanedText.length, 'chars');
+            return `[CONVERSACIÓN ACTIVA]\n${cleanedText.substring(0, 15000)}`;
+          }
+        }
+      }
+      panel = panel.parentElement;
+    }
+  }
+
+  // MÉTODO 4: Buscar divs con estructura de lista de mensajes (hijos con mismas clases)
+  const allDivs = document.querySelectorAll('div');
+  let bestCandidate: Element | null = null;
+  let bestScore = 0;
+
+  for (const div of allDivs) {
+    const rect = div.getBoundingClientRect();
+    // Solo considerar paneles visibles y de tamaño razonable
+    if (rect.width < 250 || rect.height < 150) continue;
+    if (rect.top > window.innerHeight || rect.bottom < 0) continue;
+
+    const children = div.children;
+    if (children.length < 3) continue;
+
+    // Contar hijos con clases similares
+    const classMap = new Map<string, number>();
+    for (const child of children) {
+      const cls = child.className;
+      if (cls && typeof cls === 'string') {
+        classMap.set(cls, (classMap.get(cls) || 0) + 1);
+      }
+    }
+
+    // Si hay muchos hijos con la misma clase, podría ser una lista de mensajes
+    let maxRepeats = 0;
+    for (const count of classMap.values()) {
+      if (count > maxRepeats) maxRepeats = count;
+    }
+
+    const text = div.textContent?.trim() || '';
+    const score = maxRepeats * 10 + text.length / 100;
+
+    if (maxRepeats >= 3 && text.length > 150 && score > bestScore) {
+      bestScore = score;
+      bestCandidate = div;
+    }
+  }
+
+  if (bestCandidate) {
+    const text = bestCandidate.textContent?.trim() || '';
+    console.log('✓ Encontrado por patrón de lista:', text.length, 'chars');
+    return `[CONVERSACIÓN ACTIVA]\n${text.substring(0, 15000)}`;
+  }
+
+  console.log('✗ No se encontró conversación activa');
+  return null;
+}
+
+function getMainContentArea(): string {
+  // PRIORITY 1: Active conversation (open chat panel)
+  const activeConvo = getActiveConversation();
+  if (activeConvo) {
+    return activeConvo;
+  }
+
+  // PRIORITY 2: General page content areas
+  const contentSelectors = [
+    '[role="main"]',
+    'main',
+    '#main-content',
+    '#content',
+    '.main-content',
+    'article',
+    '.content',
+    '#app',
+  ];
+
+  for (const selector of contentSelectors) {
+    const el = document.querySelector(selector);
+    if (el && el.textContent && el.textContent.trim().length > 200) {
+      return el.textContent.trim().substring(0, 15000);
+    }
+  }
+
+  // PRIORITY 3: Fallback - walk body text skipping nav/header/footer
+  const skipSelectors = ['nav', 'header', 'footer', 'aside', '[role="navigation"]', '[role="banner"]', '[role="complementary"]'];
+  const skipElements = new Set<Element>();
+  skipSelectors.forEach(sel => {
+    document.querySelectorAll(sel).forEach(el => skipElements.add(el));
+  });
+
+  const walker = document.createTreeWalker(
+    document.body,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        for (const skip of skipElements) {
+          if (skip.contains(parent)) return NodeFilter.FILTER_REJECT;
+        }
+        const style = window.getComputedStyle(parent);
+        if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  let text = '';
+  let node: Node | null;
+  while ((node = walker.nextNode()) && text.length < 15000) {
+    const t = node.textContent?.trim();
+    if (t && t.length > 1) {
+      text += t + '\n';
+    }
+  }
+
+  return text.substring(0, 15000);
+}
+
 function getStructuredDOM(): object {
   const interactiveElements: any[] = [];
-  
+
   const selectors = [
     'a[href]',
     'button',
     'input',
     'select',
     'textarea',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[role="textbox"]',
     '[role="button"]',
     '[role="link"]',
     '[role="tab"]',
@@ -34,23 +419,23 @@ function getStructuredDOM(): object {
     '[onclick]',
     '[tabindex]'
   ];
-  
+
   const elements = document.querySelectorAll(selectors.join(','));
-  
+
   elements.forEach((el, index) => {
     const rect = el.getBoundingClientRect();
-    
+
     if (rect.width === 0 && rect.height === 0) return;
     if (window.getComputedStyle(el).display === 'none') return;
     if (window.getComputedStyle(el).visibility === 'hidden') return;
-    
+
     const elementInfo: any = {
       id: generateElementId(el, index),
       tag: el.tagName.toLowerCase(),
       text: getVisibleText(el),
       attributes: {}
     };
-    
+
     if (el instanceof HTMLAnchorElement) {
       elementInfo.attributes.href = el.href;
     }
@@ -63,19 +448,29 @@ function getStructuredDOM(): object {
     if (el instanceof HTMLButtonElement || el.getAttribute('role') === 'button') {
       elementInfo.type = 'button';
     }
+    if ((el as HTMLElement).isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
+      elementInfo.type = 'contenteditable';
+      elementInfo.attributes.contenteditable = 'true';
+    }
+    if (el.getAttribute('role') === 'textbox') {
+      elementInfo.type = 'textbox';
+    }
     if (el.hasAttribute('aria-label')) {
       elementInfo.ariaLabel = el.getAttribute('aria-label');
     }
-    
+    if (el.hasAttribute('aria-placeholder')) {
+      elementInfo.attributes.placeholder = el.getAttribute('aria-placeholder');
+    }
+
     elementInfo.position = {
       top: Math.round(rect.top),
       left: Math.round(rect.left),
       visible: rect.top >= 0 && rect.top < window.innerHeight
     };
-    
+
     interactiveElements.push(elementInfo);
   });
-  
+
   return {
     url: window.location.href,
     title: document.title,
@@ -84,12 +479,12 @@ function getStructuredDOM(): object {
       height: window.innerHeight,
       scrollY: window.scrollY
     },
-    interactiveElements: interactiveElements.slice(0, 100),
+    interactiveElements: interactiveElements.slice(0, 200),
     headings: Array.from(document.querySelectorAll('h1, h2, h3')).map(h => ({
       level: h.tagName,
       text: h.textContent?.trim().substring(0, 100)
     })).slice(0, 20),
-    mainContent: document.body.innerText.substring(0, 3000)
+    mainContent: getMainContentArea()
   };
 }
 
@@ -109,7 +504,7 @@ function executeAction(action: { type: string; selector?: string; value?: string
       console.log('Buscando por selector:', action.selector, '-> encontrado:', !!element);
     } else if (typeof action.index === 'number') {
       // IMPORTANTE: Estos selectores DEBEN coincidir con los de getStructuredDOM()
-      const selectors = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]';
+      const selectors = 'a[href], button, input, select, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]';
       const elements = document.querySelectorAll(selectors);
       console.log(`Total elementos interactivos: ${elements.length}`);
       element = elements[action.index] || null;
@@ -136,10 +531,38 @@ function executeAction(action: { type: string; selector?: string; value?: string
         console.log('Intentando escribir en elemento:', element.tagName);
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
           element.focus();
-          element.value = action.value || '';
+
+          // Método mejorado para React/Vue/Angular: simular escritura real
+          // Primero limpiar el campo
+          element.value = '';
           element.dispatchEvent(new Event('input', { bubbles: true }));
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-          console.log('✓ Texto escrito:', action.value);
+
+          // Usar nativeInputValueSetter para frameworks reactivos
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype,
+            'value'
+          )?.set;
+
+          if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(element, action.value || '');
+          } else {
+            element.value = action.value || '';
+          }
+
+          // Disparar eventos en el orden correcto para máxima compatibilidad
+          element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+          // También disparar eventos de teclado para frameworks que los escuchan
+          const inputEvent = new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: action.value || ''
+          });
+          element.dispatchEvent(inputEvent);
+
+          console.log('✓ Texto escrito:', action.value, '- Valor actual:', element.value);
           return { success: true, message: `Texto escrito: ${action.value}` };
         }
         // Intentar con contenteditable
@@ -162,6 +585,72 @@ function executeAction(action: { type: string; selector?: string; value?: string
         (element as HTMLElement).focus();
         console.log('✓ Focus aplicado');
         return { success: true, message: 'Focus aplicado' };
+
+      case 'submit':
+      case 'enter':
+        // Presionar Enter en el elemento (para enviar formularios/búsquedas)
+        (element as HTMLElement).focus();
+
+        // Crear eventos de teclado más completos para máxima compatibilidad
+        const enterKeydownEvent = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        });
+        element.dispatchEvent(enterKeydownEvent);
+
+        const enterKeypressEvent = new KeyboardEvent('keypress', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        });
+        element.dispatchEvent(enterKeypressEvent);
+
+        const enterKeyupEvent = new KeyboardEvent('keyup', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        });
+        element.dispatchEvent(enterKeyupEvent);
+
+        // Si es un input dentro de un form, intentar múltiples métodos de submit
+        if (element instanceof HTMLInputElement && element.form) {
+          const form = element.form;
+
+          // Método 1: Disparar evento submit
+          const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+          const submitted = !form.dispatchEvent(submitEvent);
+
+          // Método 2: Si el evento no fue cancelado, intentar submit nativo
+          if (!submitted) {
+            // Buscar botón de submit y hacer click
+            const submitBtn = form.querySelector('button[type="submit"], input[type="submit"]') as HTMLElement;
+            if (submitBtn) {
+              submitBtn.click();
+              console.log('✓ Click en botón submit del formulario');
+            } else {
+              // Último recurso: llamar submit() directamente
+              try {
+                form.submit();
+                console.log('✓ Form.submit() ejecutado');
+              } catch (e) {
+                console.log('Submit directo falló, pero Enter ya se envió');
+              }
+            }
+          }
+        }
+
+        console.log('✓ Enter/Submit ejecutado');
+        return { success: true, message: 'Enter presionado' };
 
       default:
         console.log('✗ Acción desconocida:', action.type);
@@ -247,8 +736,8 @@ function createSelectionPopup() {
     }
     
     .lia-popup {
-      background: #1a1a2e;
-      border: 1px solid #2d2d44;
+      background: #1E2329;
+      border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 12px;
       padding: 8px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
@@ -387,6 +876,14 @@ document.addEventListener('mouseup', (e) => {
       console.log('Lia: Text selected, length:', selectedText.length);
       
       try {
+        // Send selection immediately to background/popup
+        chrome.runtime.sendMessage({
+          type: 'TEXT_SELECTED',
+          text: currentSelection
+        }).catch(() => {
+          // Ignore errors if background is not ready
+        });
+
         const range = selection?.getRangeAt(0);
         if (range) {
           const rect = range.getBoundingClientRect();
@@ -449,6 +946,49 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
     case 'getSelectedText':
       sendResponse({ text: currentSelection });
+      break;
+
+    case 'getGeolocation':
+      // Obtener geolocalización desde el contexto de la página web
+      console.log('Lia: Solicitando geolocalización...');
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          console.log('✓ Geolocalización obtenida:', position.coords);
+          sendResponse({
+            success: true,
+            location: {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy
+            }
+          });
+        },
+        (error) => {
+          console.error('✗ Error de geolocalización:', error);
+          let errorMessage = 'Error desconocido';
+          switch (error.code) {
+            case error.PERMISSION_DENIED:
+              errorMessage = 'Permisos de ubicación denegados por el usuario';
+              break;
+            case error.POSITION_UNAVAILABLE:
+              errorMessage = 'Ubicación no disponible';
+              break;
+            case error.TIMEOUT:
+              errorMessage = 'Tiempo de espera agotado';
+              break;
+          }
+          sendResponse({
+            success: false,
+            error: errorMessage,
+            errorCode: error.code
+          });
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 300000 // 5 minutos de cache
+        }
+      );
       break;
 
     default:

@@ -1,15 +1,22 @@
 
-export const GOOGLE_API_KEY = "22312";
+export const GOOGLE_API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
 
-// Model Configurations - User specified models
-export const MODELS = {
-  PRIMARY: "gemini-3-flash",  // Modelo principal con Google Search
-  FALLBACK: "gemini-3-pro",  // Fallback estable
-  COMPUTER_USE: "gemini-2.0-flash-exp",  // Para acciones [ACTION:...]
-  IMAGE_GENERATION: "gemini-2.5-flash-image",
-  DEEP_RESEARCH: "deep-research-pro-preview",
-  LIVE: "	gemini-2.5-flash-native-audio-preview-12-2025",
+export const SUPABASE = {
+  URL: import.meta.env.VITE_SUPABASE_URL || '',
+  ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 };
 
-// Live API URL
-export const LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService/BidiGenerateContent";
+// Model Configurations
+export const MODELS = {
+  PRIMARY: "gemini-3-flash-preview",  // Gemini 3 Flash (free tier disponible)
+  FALLBACK: "gemini-2.5-flash",  // Fallback estable (no preview, amplia disponibilidad)
+  COMPUTER_USE: "gemini-3-flash-preview",  // Mismo que PRIMARY; usa prompts custom [ACTION:...], no API nativa Computer Use
+  IMAGE_GENERATION: "gemini-2.5-flash-image",
+  DEEP_RESEARCH: "deep-research-pro-preview",
+  LIVE: "gemini-2.5-flash-native-audio-latest",  // Live API model - latest version
+  PRO: "gemini-3-pro-preview", // High reasoning model for Prompt Engineering
+  MAPS: "gemini-2.5-flash", // Maps Grounding NO disponible en Gemini 3, usar 2.5
+};
+
+// Live API URL - Using v1beta which supports the Live API models
+export const LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
