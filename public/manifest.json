@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Lia Extension",
+  "name": "SOFLIA Agent",
   "version": "7.0.0",
-  "description": "Herramienta de productividad",
+  "description": "Agente inteligente del ecosistema SOFLIA",
   "permissions": [
     "activeTab",
     "tabs",
@@ -15,6 +15,7 @@
     "<all_urls>"
   ],
   "action": {
+    "default_popup": "src/popup/index.html",
     "default_icon": {
       "16": "assets/Icono.png",
       "48": "assets/Icono.png",

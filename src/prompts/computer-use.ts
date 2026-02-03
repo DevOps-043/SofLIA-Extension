@@ -8,7 +8,7 @@
 // ============================================
 // PROMPT PRINCIPAL DE COMPUTER USE
 // ============================================
-export const COMPUTER_USE_PROMPT = `Eres Lia, un asistente inteligente que controla el navegador del usuario para completar tareas de forma COMPLETA y AUTÓNOMA.
+export const COMPUTER_USE_PROMPT = `Eres SOFLIA Agent, un asistente inteligente que controla el navegador del usuario para completar tareas de forma COMPLETA y AUTÓNOMA.
 
 ## COMANDOS DE ACCIÓN DISPONIBLES:
 - [ACTION:click:INDEX] - Click en elemento (botones, links, iconos)

@@ -386,7 +386,7 @@ const statusConfig: Record<MeetingStatus | 'ready', { text: string; color: strin
   ready: { text: 'Listo para iniciar', color: '#10b981', bgColor: 'rgba(16, 185, 129, 0.2)' },
   connecting: { text: 'Conectando...', color: '#fbbf24', bgColor: 'rgba(251, 191, 36, 0.2)', description: 'Selecciona la pestaña de la reunión en el diálogo' },
   transcribing: { text: 'Transcribiendo', color: '#10b981', bgColor: 'rgba(16, 185, 129, 0.2)', description: 'Capturando audio de la reunión' },
-  lia_responding: { text: 'Lia respondiendo', color: '#8b5cf6', bgColor: 'rgba(139, 92, 246, 0.2)' },
+  lia_responding: { text: 'SOFLIA respondiendo', color: '#8b5cf6', bgColor: 'rgba(139, 92, 246, 0.2)' },
   paused: { text: 'Pausado', color: '#f59e0b', bgColor: 'rgba(245, 158, 11, 0.2)' },
   reconnecting: { text: 'Reconectando...', color: '#fbbf24', bgColor: 'rgba(251, 191, 36, 0.2)', description: 'Reestableciendo conexión con Live API' },
   error: { text: 'Error de conexión', color: '#ef4444', bgColor: 'rgba(239, 68, 68, 0.2)' },
@@ -660,7 +660,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
     try {
       await meetingManagerRef.current.invokeLia(prompt);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al invocar a Lia');
+      setError(err instanceof Error ? err.message : 'Error al invocar a SOFLIA');
     }
   };
 
@@ -683,7 +683,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
         const transcriptText = transcript
           .map((s) => {
             const time = new Date(s.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-            const speaker = s.isLiaResponse ? 'Lia' : (s.speaker || 'Participante');
+            const speaker = s.isLiaResponse ? 'SOFLIA' : (s.speaker || 'Participante');
             return `[${time}] ${speaker}: ${s.text}`;
           })
           .join('\n');
@@ -720,7 +720,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
         session_id: session.id,
         timestamp: new Date(s.timestamp).toISOString(),
         relative_time_ms: s.relativeTimeMs,
-        speaker: s.isLiaResponse ? 'Lia' : (s.speaker || null),
+        speaker: s.isLiaResponse ? 'SOFLIA' : (s.speaker || null),
         text: s.text,
         is_lia_response: s.isLiaResponse,
         is_lia_invocation: s.isLiaInvocation,
@@ -953,7 +953,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
               disabled={status === 'lia_responding'}
             >
               <SparkleIcon />
-              {status === 'lia_responding' ? 'Lia respondiendo...' : 'Invocar a Lia'}
+              {status === 'lia_responding' ? 'SOFLIA respondiendo...' : 'Invocar a SOFLIA'}
             </button>
 
             <button
@@ -988,7 +988,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
                       color: segment.isLiaResponse ? '#a78bfa' : 'var(--color-accent)',
                     }}
                   >
-                    {segment.isLiaResponse ? 'Lia' : (segment.speaker || 'Participante')}
+                    {segment.isLiaResponse ? 'SOFLIA' : (segment.speaker || 'Participante')}
                   </span>
                   <span style={styles.timestamp}>
                     {new Date(segment.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}

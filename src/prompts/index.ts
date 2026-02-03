@@ -1,7 +1,7 @@
 /**
  * PROMPTS - BARREL FILE
  *
- * Archivo central de exportación para todos los prompts de Lia.
+ * Archivo central de exportación para todos los prompts de SOFLIA Agent.
  * Importa desde aquí para mantener imports limpios.
  *
  * Estructura:

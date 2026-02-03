@@ -135,12 +135,12 @@ export default function Auth() {
           width: '70px', height: '70px', background: 'radial-gradient(circle, rgba(0, 212, 179, 0.4) 0%, transparent 70%)',
           filter: 'blur(15px)', zIndex: 0
         }} />
-        <img src="/assets/Icono.png" alt="Lia" style={{ width: '64px', height: '64px', position: 'relative', zIndex: 1, filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.3))' }} />
+        <img src="/assets/Icono.png" alt="SOFLIA" style={{ width: '64px', height: '64px', position: 'relative', zIndex: 1, filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.3))' }} />
       </div>
 
       <div style={{ textAlign: 'center', marginBottom: '24px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: '#fff' }}>
-          {mode === 'login' ? 'Bienvenido a Lia' : 'Crear cuenta'}
+          {mode === 'login' ? 'Bienvenido a SOFLIA Agent' : 'Crear cuenta'}
         </h1>
         <p style={{ fontSize: '13px', color: '#94a3b8' }}>
           {mode === 'login'
@@ -376,7 +376,7 @@ export default function Auth() {
           <span>No tienes cuenta?</span>
           <br />
           <span style={{ color: '#64748b', fontSize: '12px' }}>
-            Registrate en SOFIA para acceder a Lia
+            Registrate en SOFIA para acceder al Agente
           </span>
         </div>
       )}

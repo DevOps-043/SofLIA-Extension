@@ -122,12 +122,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, u
     const [primaryModel, setPrimaryModel] = useState('gemini-3-flash-preview');
     const [fallbackModel, setFallbackModel] = useState('gemini-2.5-flash');
 
+    // Form States - API Keys (stored locally only, never in Supabase)
+    const [userApiKey, setUserApiKey] = useState('');
+    const [showApiKey, setShowApiKey] = useState(false);
+    const [apiKeyStatus, setApiKeyStatus] = useState<'none' | 'saved' | 'testing' | 'valid' | 'invalid'>('none');
+
     // Load Data
     useEffect(() => {
         if (isOpen && user) {
             loadSettings();
+            loadApiKey();
         }
     }, [isOpen, user]);
+
+    // Load API key from chrome.storage (never stored in Supabase)
+    const loadApiKey = async () => {
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.get(['lia_user_google_api_key'], (result) => {
+                if (result.lia_user_google_api_key) {
+                    setUserApiKey(result.lia_user_google_api_key);
+                    setApiKeyStatus('saved');
+                }
+            });
+        }
+    };
+
+    // Test API key validity
+    const testApiKey = async (key: string) => {
+        if (!key || key.length < 10) {
+            setApiKeyStatus('invalid');
+            return;
+        }
+        setApiKeyStatus('testing');
+        try {
+            const response = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`
+            );
+            if (response.ok) {
+                setApiKeyStatus('valid');
+            } else {
+                setApiKeyStatus('invalid');
+            }
+        } catch {
+            setApiKeyStatus('invalid');
+        }
+    };
+
+    // Save API key to chrome.storage
+    const saveApiKey = () => {
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            if (userApiKey.trim()) {
+                chrome.storage.local.set({ lia_user_google_api_key: userApiKey.trim() });
+                testApiKey(userApiKey.trim());
+            } else {
+                chrome.storage.local.remove('lia_user_google_api_key');
+                setApiKeyStatus('none');
+            }
+        }
+    };
 
     const loadSettings = async () => {
         setLoading(true);
@@ -253,6 +305,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, u
                         Modelos de IA
                      </div>
                      <div
+                        onClick={() => setActiveTab('apikeys')}
+                        style={{
+                            padding: '10px 14px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500,
+                            backgroundColor: activeTab === 'apikeys' ? 'var(--bg-dark-tertiary)' : 'transparent',
+                            color: activeTab === 'apikeys' ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+                            display: 'flex', alignItems: 'center', gap: '10px', transition: 'all 0.2s'
+                        }}
+                     >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                        </svg>
+                        API Keys
+                     </div>
+                     <div
                          style={{
                              padding: '10px 14px', fontSize: '14px', fontWeight: 500,
                              color: 'var(--color-gray-medium)', cursor: 'not-allowed', opacity: 0.6,
@@ -272,7 +338,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, u
                     {/* Header */}
                     <div style={{ padding: '20px 32px', borderBottom: '1px solid var(--border-modal)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--color-white)', margin: 0 }}>
-                            {activeTab === 'personalization' ? 'Personalización' : 'Modelos de IA'}
+                            {activeTab === 'personalization' ? 'Personalización' : activeTab === 'models' ? 'Modelos de IA' : 'API Keys'}
                         </h2>
                         <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-gray-medium)', cursor: 'pointer', padding: '4px' }}>
                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -379,6 +445,191 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, u
                                         Se usará si el modelo primario no está disponible o falla.
                                     </p>
                                 </div>
+                            </>
+                        )}
+
+                        {/* === API KEYS TAB === */}
+                        {activeTab === 'apikeys' && (
+                            <>
+                                {/* Security Warning */}
+                                <div style={{
+                                    padding: '14px 16px',
+                                    background: 'rgba(245, 158, 11, 0.1)',
+                                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                                    borderRadius: '10px',
+                                    marginBottom: '28px',
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    gap: '12px'
+                                }}>
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" style={{ flexShrink: 0, marginTop: '1px' }}>
+                                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                                    </svg>
+                                    <div>
+                                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#f59e0b', marginBottom: '4px' }}>
+                                            Seguridad de API Keys
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: 'var(--color-gray-medium)', lineHeight: 1.5 }}>
+                                            Tu API key se guarda localmente en tu navegador y nunca se envía a nuestros servidores.
+                                            Solo se usa para comunicarse directamente con Google Gemini.
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Google API Key */}
+                                <div style={{ marginBottom: '28px' }}>
+                                    <h4 style={{ color: 'var(--color-white)', fontSize: '15px', marginBottom: '16px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2">
+                                            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                                        </svg>
+                                        Google Gemini API Key
+                                    </h4>
+
+                                    <div style={{ marginBottom: '12px' }}>
+                                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--color-gray-medium)', marginBottom: '8px' }}>
+                                            Tu API Key personal
+                                        </label>
+                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                            <div style={{ flex: 1, position: 'relative' }}>
+                                                <input
+                                                    type={showApiKey ? 'text' : 'password'}
+                                                    value={userApiKey}
+                                                    onChange={e => setUserApiKey(e.target.value)}
+                                                    style={{...inputStyle, paddingRight: '40px'}}
+                                                    placeholder="AIzaSy..."
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowApiKey(!showApiKey)}
+                                                    style={{
+                                                        position: 'absolute',
+                                                        right: '10px',
+                                                        top: '50%',
+                                                        transform: 'translateY(-50%)',
+                                                        background: 'none',
+                                                        border: 'none',
+                                                        cursor: 'pointer',
+                                                        padding: '4px',
+                                                        color: 'var(--color-gray-medium)'
+                                                    }}
+                                                >
+                                                    {showApiKey ? (
+                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                                                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                                                        </svg>
+                                                    ) : (
+                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                            <circle cx="12" cy="12" r="3"></circle>
+                                                        </svg>
+                                                    )}
+                                                </button>
+                                            </div>
+                                            <button
+                                                onClick={saveApiKey}
+                                                style={{
+                                                    padding: '12px 16px',
+                                                    borderRadius: '8px',
+                                                    border: 'none',
+                                                    background: 'var(--color-accent)',
+                                                    color: 'var(--color-on-accent)',
+                                                    cursor: 'pointer',
+                                                    fontSize: '13px',
+                                                    fontWeight: 500,
+                                                    whiteSpace: 'nowrap'
+                                                }}
+                                            >
+                                                Guardar Key
+                                            </button>
+                                        </div>
+
+                                        {/* Status indicator */}
+                                        {apiKeyStatus !== 'none' && (
+                                            <div style={{
+                                                marginTop: '8px',
+                                                fontSize: '12px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '6px',
+                                                color: apiKeyStatus === 'valid' ? '#10b981' :
+                                                       apiKeyStatus === 'invalid' ? '#ef4444' :
+                                                       apiKeyStatus === 'testing' ? '#f59e0b' : 'var(--color-gray-medium)'
+                                            }}>
+                                                {apiKeyStatus === 'testing' && (
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}>
+                                                        <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+                                                    </svg>
+                                                )}
+                                                {apiKeyStatus === 'valid' && (
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <polyline points="20 6 9 17 4 12"></polyline>
+                                                    </svg>
+                                                )}
+                                                {apiKeyStatus === 'invalid' && (
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                                    </svg>
+                                                )}
+                                                {apiKeyStatus === 'saved' && (
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                                                        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                                                        <polyline points="7 3 7 8 15 8"></polyline>
+                                                    </svg>
+                                                )}
+                                                {apiKeyStatus === 'testing' && 'Verificando...'}
+                                                {apiKeyStatus === 'valid' && 'API Key válida'}
+                                                {apiKeyStatus === 'invalid' && 'API Key inválida'}
+                                                {apiKeyStatus === 'saved' && 'API Key guardada'}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div style={{
+                                        padding: '12px 14px',
+                                        background: 'var(--bg-dark-tertiary)',
+                                        borderRadius: '8px',
+                                        marginTop: '16px'
+                                    }}>
+                                        <p style={{ fontSize: '12px', color: 'var(--color-gray-medium)', margin: 0, lineHeight: 1.6 }}>
+                                            <strong style={{ color: 'var(--color-white)' }}>¿Cómo obtener tu API Key?</strong><br/>
+                                            1. Ve a <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-accent)' }}>Google AI Studio</a><br/>
+                                            2. Haz clic en "Create API Key"<br/>
+                                            3. Copia la key y pégala aquí
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Clear Key Button */}
+                                {userApiKey && (
+                                    <div style={{ marginBottom: '24px' }}>
+                                        <button
+                                            onClick={() => {
+                                                setUserApiKey('');
+                                                if (typeof chrome !== 'undefined' && chrome.storage) {
+                                                    chrome.storage.local.remove('lia_user_google_api_key');
+                                                }
+                                                setApiKeyStatus('none');
+                                            }}
+                                            style={{
+                                                padding: '10px 16px',
+                                                borderRadius: '8px',
+                                                border: '1px solid #ef4444',
+                                                background: 'transparent',
+                                                color: '#ef4444',
+                                                cursor: 'pointer',
+                                                fontSize: '13px',
+                                                fontWeight: 500
+                                            }}
+                                        >
+                                            Eliminar API Key
+                                        </button>
+                                    </div>
+                                )}
                             </>
                         )}
 

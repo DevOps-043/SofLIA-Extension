@@ -1,4 +1,4 @@
-console.log('Lia Content Script loaded');
+console.log('SOFLIA Content Script loaded');
 
 import { MeetSpeakerDetector, MeetParticipant, SpeakerChangeEvent } from '../services/meet-speaker-detector';
 
@@ -15,23 +15,23 @@ let meetingParticipants: MeetParticipant[] = [];
  */
 function startSpeakerDetection(): void {
   if (speakerDetector) {
-    console.log('Lia: Speaker detector already running');
+    console.log('SOFLIA: Speaker detector already running');
     return;
   }
 
   const platform = detectMeetingPlatform();
   if (platform !== 'google-meet') {
-    console.log('Lia: Speaker detection only supported for Google Meet');
+    console.log('SOFLIA: Speaker detection only supported for Google Meet');
     return;
   }
 
-  console.log('Lia: Starting speaker detection...');
+  console.log('SOFLIA: Starting speaker detection...');
   speakerDetector = new MeetSpeakerDetector();
 
   speakerDetector.start({
     onSpeakerChange: (event: SpeakerChangeEvent) => {
       currentActiveSpeaker = event.currentSpeaker;
-      console.log('Lia: Speaker changed to:', currentActiveSpeaker);
+      console.log('SOFLIA: Speaker changed to:', currentActiveSpeaker);
 
       // Notify popup/background about speaker change
       chrome.runtime.sendMessage({
@@ -45,7 +45,7 @@ function startSpeakerDetection(): void {
     },
     onParticipantsUpdate: (participants: MeetParticipant[]) => {
       meetingParticipants = participants;
-      console.log('Lia: Participants updated:', participants.map(p => p.name));
+      console.log('SOFLIA: Participants updated:', participants.map(p => p.name));
 
       // Notify popup/background about participants
       chrome.runtime.sendMessage({
@@ -67,7 +67,7 @@ function stopSpeakerDetection(): void {
     speakerDetector = null;
     currentActiveSpeaker = null;
     meetingParticipants = [];
-    console.log('Lia: Speaker detection stopped');
+    console.log('SOFLIA: Speaker detection stopped');
   }
 }
 
@@ -203,7 +203,7 @@ function getMeetingInfo(): MeetingInfo {
     // Consider active if we have indicators OR if we have a valid meeting code in URL
     info.isActive = hasActiveIndicator || hasMeetingCode;
 
-    console.log('Lia: Meeting detection - hasActiveIndicator:', hasActiveIndicator, 'hasMeetingCode:', hasMeetingCode, 'isActive:', info.isActive);
+    console.log('SOFLIA: Meeting detection - hasActiveIndicator:', hasActiveIndicator, 'hasMeetingCode:', hasMeetingCode, 'isActive:', info.isActive);
   }
 
   if (platform === 'zoom') {
@@ -273,7 +273,117 @@ function getActiveConversation(): string | null {
   // Strategy: Find individual message elements and extract their text.
   // This avoids capturing UI elements from the sidebar/navigation.
 
-  console.log('=== LIA: Buscando conversación activa ===');
+  console.log('=== SOFLIA: Buscando conversación activa ===');
+
+  // MÉTODO ESPECIAL: ChatGPT pages (chatgpt.com, share pages)
+  const isChatGPT = window.location.hostname.includes('chatgpt.com') ||
+                    window.location.hostname.includes('chat.openai.com');
+
+  if (isChatGPT) {
+    console.log('🤖 Detectada página de ChatGPT');
+
+    // Método 1: Buscar mensajes por data-message-author-role
+    const messageElements = document.querySelectorAll('[data-message-author-role]');
+    if (messageElements.length > 0) {
+      const messages: string[] = [];
+      messageElements.forEach(el => {
+        const role = el.getAttribute('data-message-author-role');
+        const text = el.textContent?.trim() || '';
+        if (text.length > 10) {
+          messages.push(`[${role === 'user' ? 'Usuario' : 'Asistente'}]: ${text}`);
+        }
+      });
+      if (messages.length > 0) {
+        console.log('✓ ChatGPT: Extraídos', messages.length, 'mensajes por data-message-author-role');
+        return `[CONVERSACIÓN DE CHATGPT]\n${messages.join('\n\n---\n\n')}`;
+      }
+    }
+
+    // Método 2: Buscar dentro de <main> excluyendo nav/aside
+    const mainEl = document.querySelector('main');
+    if (mainEl) {
+      // Clonar para no modificar el DOM real
+      const mainClone = mainEl.cloneNode(true) as HTMLElement;
+
+      // Remover elementos de navegación del clon
+      mainClone.querySelectorAll('nav, aside, [role="navigation"], [role="complementary"]').forEach(el => el.remove());
+
+      // Buscar elementos de texto con contenido de conversación
+      const textElements = mainClone.querySelectorAll('.markdown, .prose, [class*="message"], [class*="conversation"]');
+      if (textElements.length > 0) {
+        const texts: string[] = [];
+        textElements.forEach(el => {
+          const text = el.textContent?.trim() || '';
+          if (text.length > 20 && !texts.some(t => t.includes(text) || text.includes(t))) {
+            texts.push(text);
+          }
+        });
+        if (texts.length > 0) {
+          console.log('✓ ChatGPT: Extraído contenido de', texts.length, 'elementos markdown/prose');
+          return `[CONVERSACIÓN DE CHATGPT]\n${texts.join('\n\n---\n\n')}`;
+        }
+      }
+
+      // Método 3: Extraer todo el texto de main, pero filtrar sidebar
+      const mainText = mainClone.textContent?.trim() || '';
+      if (mainText.length > 200) {
+        // Filtrar líneas que parecen ser del sidebar (nombres de chats cortos, etc.)
+        const lines = mainText.split('\n').filter(line => {
+          const l = line.trim();
+          // Mantener líneas que parecen ser contenido de conversación
+          return l.length > 30 || // Líneas largas son probablemente contenido
+                 l.includes('?') || // Preguntas
+                 l.includes('.') || // Oraciones
+                 l.includes(':'); // Listas o diálogos
+        });
+        const filteredText = lines.join('\n');
+        if (filteredText.length > 200) {
+          console.log('✓ ChatGPT: Extraído texto filtrado de main:', filteredText.length, 'chars');
+          return `[CONVERSACIÓN DE CHATGPT]\n${filteredText.substring(0, 15000)}`;
+        }
+      }
+    }
+
+    // Método 4: Buscar el contenedor principal de la conversación por posición
+    // En ChatGPT, el sidebar está a la izquierda (<300px), el contenido principal está centrado
+    const allDivs = document.querySelectorAll('div');
+    let bestConversationDiv: Element | null = null;
+    let bestScore = 0;
+
+    for (const div of allDivs) {
+      const rect = div.getBoundingClientRect();
+
+      // Buscar divs grandes en el centro/derecha de la pantalla (no sidebar)
+      if (rect.left > 200 && // No es sidebar izquierdo
+          rect.width > 400 && // Suficientemente ancho
+          rect.height > 300 && // Suficientemente alto
+          rect.top >= 0 && rect.top < 200) { // Cerca del top
+
+        const text = div.textContent?.trim() || '';
+        // Puntuar por contenido que parece conversación
+        let score = text.length;
+        if (text.includes('?')) score += 500; // Tiene preguntas
+        if (text.includes(':')) score += 300; // Tiene diálogo
+        if (text.length > 1000) score += 1000; // Contenido sustancial
+
+        // Penalizar si parece ser sidebar (muchas líneas cortas)
+        const lines = text.split('\n');
+        const shortLines = lines.filter(l => l.trim().length > 0 && l.trim().length < 40).length;
+        if (shortLines > lines.length * 0.7) score -= 2000; // Muchas líneas cortas = sidebar
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestConversationDiv = div;
+        }
+      }
+    }
+
+    if (bestConversationDiv && bestScore > 500) {
+      const text = bestConversationDiv.textContent?.trim() || '';
+      console.log('✓ ChatGPT: Encontrado contenedor de conversación por posición, score:', bestScore);
+      return `[CONVERSACIÓN DE CHATGPT]\n${text.substring(0, 15000)}`;
+    }
+  }
 
   // MÉTODO 0: Extraer mensajes individuales buscando elementos con timestamps
   // En Google Chat, los mensajes tienen timestamps como "24 min", "hace 2 horas", etc.

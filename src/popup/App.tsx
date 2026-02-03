@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { LiveClient, AudioCapture } from '../services/live-api';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useAuth } from '../contexts/AuthContext';
 import Auth from '../components/Auth';
 import { supabase } from '../lib/supabase';
@@ -71,7 +72,7 @@ function App() {
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: 'var(--bg-dark-main)', color: 'var(--color-text-primary)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
           <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--color-accent)', borderTopColor: 'transparent', animation: 'spin 1s linear infinite' }} />
-          <span style={{ fontSize: '13px', opacity: 0.8 }}>Iniciando Lia...</span>
+          <span style={{ fontSize: '13px', opacity: 0.8 }}>Iniciando SOFLIA...</span>
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       </div>
@@ -85,46 +86,84 @@ function App() {
   }
 
   // Static Model List with Rich Metadata for UI
+  // Thinking Options - Different for Gemini 3 (thinkingLevel) vs Gemini 2.5 (thinkingBudget)
+  // According to docs:
+  // - Gemini 3 Pro: only supports "low" and "high" (NOT minimal, NOT medium)
+  // - Gemini 3 Flash: supports "minimal", "low", "medium", "high"
+  // - Gemini 2.5: uses thinkingBudget (0-24576 tokens)
+
+  // Gemini 3 Flash - supports all levels
+  const THINKING_OPTIONS_GEMINI3_FLASH = [
+    { id: 'minimal', name: 'Rápido', desc: 'Responde rápidamente', level: 'minimal' },
+    { id: 'low', name: 'Pensar', desc: 'Razonamiento básico', level: 'low' },
+    { id: 'medium', name: 'Medio', desc: 'Razonamiento balanceado', level: 'medium' },
+    { id: 'high', name: 'Alto', desc: 'Máximo razonamiento', level: 'high' },
+  ];
+
+  // Gemini 3 Pro - only supports low and high
+  const THINKING_OPTIONS_GEMINI3_PRO = [
+    { id: 'low', name: 'Pensar', desc: 'Razonamiento básico', level: 'low' },
+    { id: 'high', name: 'Pro', desc: 'Máximo razonamiento', level: 'high' },
+  ];
+
+  // Gemini 2.5 - uses token budget
+  const THINKING_OPTIONS_GEMINI25 = [
+    { id: 'off', name: 'Rápido', desc: 'Sin pensamiento', budget: 0 },
+    { id: 'low', name: 'Pensar', desc: 'Pensamiento ligero', budget: 1024 },
+    { id: 'medium', name: 'Medio', desc: 'Pensamiento moderado', budget: 8192 },
+    { id: 'high', name: 'Alto', desc: 'Pensamiento profundo', budget: 24576 },
+  ];
+
   const MODEL_OPTIONS = [
-      { 
-        id: 'gemini-3-flash-preview', 
-        name: 'Gemini 3.0 Flash', 
+      {
+        id: 'gemini-3-flash-preview',
+        name: 'Gemini 3.0 Flash',
         desc: 'Equilibrio perfecto entre velocidad y calidad.',
         icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>,
         badge: 'Recomendado',
-        color: '#00D4B3' // Aqua
+        color: '#00D4B3',
+        thinkingType: 'level' as const,
+        thinkingOptions: THINKING_OPTIONS_GEMINI3_FLASH
       },
-      { 
-        id: 'gemini-3-pro-preview', 
-        name: 'Gemini 3 Pro', 
+      {
+        id: 'gemini-3-pro-preview',
+        name: 'Gemini 3 Pro',
         desc: 'Mayor capacidad de razonamiento lógico.',
         icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"></path><path d="M8.5 8.5v.01"></path><path d="M16 12v.01"></path><path d="M12 16v.01"></path></svg>,
         badge: 'Pro',
-        color: '#A855F7' // Purple
+        color: '#A855F7',
+        thinkingType: 'level' as const,
+        thinkingOptions: THINKING_OPTIONS_GEMINI3_PRO
       },
-      { 
-        id: 'gemini-2.5-flash', 
-        name: 'Gemini 2.5 Flash', 
+      {
+        id: 'gemini-2.5-flash',
+        name: 'Gemini 2.5 Flash',
         desc: 'Ultra rápido y ligero para tareas simples.',
         icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="M12 15l-3-3a22 22 0 0 1 2-12 22 22 0 0 1 12 2 22 22 0 0 1-11 13z"></path><path d="M9 9l3 3"></path></svg>,
         badge: 'Nuevo',
-        color: '#3B82F6' // Blue
+        color: '#3B82F6',
+        thinkingType: 'budget' as const,
+        thinkingOptions: THINKING_OPTIONS_GEMINI25
       },
-      { 
-        id: 'gemini-2.5-pro', 
-        name: 'Gemini 2.5 Pro', 
+      {
+        id: 'gemini-2.5-pro',
+        name: 'Gemini 2.5 Pro',
         desc: 'Modelo de máxima inteligencia.',
         icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"></path></svg>,
         badge: 'Experimental',
-        color: '#F59E0B' // Amber
+        color: '#F59E0B',
+        thinkingType: 'budget' as const,
+        thinkingOptions: THINKING_OPTIONS_GEMINI25
       },
-      { 
-        id: 'gemini-2.5-flash-lite', 
-        name: 'Gemini 2.5 Flash Lite', 
+      {
+        id: 'gemini-2.5-flash-lite',
+        name: 'Gemini 2.5 Flash Lite',
         desc: 'Versión estable anterior.',
         icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>,
         badge: null,
-        color: '#10B981' // Green
+        color: '#10B981',
+        thinkingType: 'budget' as const,
+        thinkingOptions: THINKING_OPTIONS_GEMINI25
       }
   ];
 
@@ -150,19 +189,62 @@ function App() {
   const [_preferredFallbackModel, setPreferredFallbackModel] = useState<string>('gemini-2.5-flash');
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
 
+  // Thinking Mode State
+  // Gemini 3: 'minimal', 'low', 'medium', 'high'
+  // Gemini 2.5: 'off', 'low', 'medium', 'high'
+  const [thinkingMode, setThinkingMode] = useState<string>('minimal');
+  const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
+
   // Handler for model change
   const handleModelChange = async (type: 'primary' | 'fallback', modelId: string) => {
       // Optimistic update
-      if (type === 'primary') setPreferredPrimaryModel(modelId);
-      else setPreferredFallbackModel(modelId);
+      if (type === 'primary') {
+        setPreferredPrimaryModel(modelId);
+        // Adapt thinking mode when switching models
+        const newModel = MODEL_OPTIONS.find(m => m.id === modelId);
+        if (newModel) {
+          const isGemini3 = newModel.thinkingType === 'level';
+          const availableOptions = newModel.thinkingOptions.map((o: any) => o.id);
+
+          // If current mode is not available in new model, adapt it
+          if (!availableOptions.includes(thinkingMode)) {
+            // For Gemini 3 Pro (only low/high): map minimal->low, medium->low
+            if (modelId === 'gemini-3-pro-preview') {
+              setThinkingMode('low');
+            }
+            // For Gemini 2.5: map minimal->off
+            else if (!isGemini3 && thinkingMode === 'minimal') {
+              setThinkingMode('off');
+            }
+            // For Gemini 3 Flash: map off->minimal
+            else if (isGemini3 && thinkingMode === 'off') {
+              setThinkingMode('minimal');
+            }
+          }
+        }
+      } else {
+        setPreferredFallbackModel(modelId);
+      }
 
       if (user) {
           const updateData = {
               user_id: user.id,
               [type === 'primary' ? 'primary_model' : 'fallback_model']: modelId
           };
-          
+
           await supabase.from('user_ai_settings').upsert(updateData, { onConflict: 'user_id' });
+      }
+  };
+
+  // Handler for thinking mode change
+  const handleThinkingChange = async (mode: string) => {
+      setThinkingMode(mode);
+
+      if (user) {
+          await supabase.from('user_ai_settings').upsert({
+              user_id: user.id,
+              thinking_mode: mode
+          }, { onConflict: 'user_id' });
       }
   };
 
@@ -188,6 +270,9 @@ function App() {
 
   // Image Zoom State
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+
+  // Copy Feedback State
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Sidebar & History States
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -247,6 +332,15 @@ function App() {
     };
   }, []);
 
+  // Close thinking dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => setIsThinkingDropdownOpen(false);
+    if (isThinkingDropdownOpen) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [isThinkingDropdownOpen]);
+
   // ========== SUPABASE DATA LOADING ==========
 
   // Load user settings
@@ -266,6 +360,20 @@ function App() {
           about_user: data.about_user,
           custom_instructions: data.custom_instructions
         });
+        // Load model preferences
+        const loadedModel = data.primary_model || 'gemini-3-flash-preview';
+        if (data.primary_model) setPreferredPrimaryModel(data.primary_model);
+        if (data.fallback_model) setPreferredFallbackModel(data.fallback_model);
+        // Load thinking mode - adapt based on model type
+        if (data.thinking_mode) {
+          const modelConfig = MODEL_OPTIONS.find(m => m.id === loadedModel);
+          const isGemini3 = modelConfig?.thinkingType === 'level';
+          let mode = data.thinking_mode;
+          // Adapt mode if incompatible with model
+          if (isGemini3 && mode === 'off') mode = 'minimal';
+          if (!isGemini3 && mode === 'minimal') mode = 'off';
+          setThinkingMode(mode);
+        }
       }
     } catch (err) {
       console.log('No user settings found');
@@ -727,10 +835,13 @@ function App() {
     setSelectedImages(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Copy to Clipboard
-  const copyToClipboard = (text: string) => {
+  // Copy to Clipboard with visual feedback
+  const copyToClipboard = (text: string, id?: string) => {
     navigator.clipboard.writeText(text);
-    // Could add a toast notification here
+    if (id) {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   };
 
   // Reactions
@@ -745,6 +856,140 @@ function App() {
       }
       return msg;
     }));
+  };
+
+  // Code Block Component with Copy Button - ChatGPT-like design
+  // Using 'any' for props to avoid react-markdown type conflicts
+  const CodeBlock = (props: any) => {
+    const { children, className } = props;
+    const [copied, setCopied] = useState(false);
+    const [isHovered, setIsHovered] = useState(false);
+    const codeString = String(children || '').replace(/\n$/, '');
+    const language = className?.replace('language-', '') || '';
+
+    const handleCopy = () => {
+      navigator.clipboard.writeText(codeString);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    };
+
+    // Inline code (no language class)
+    if (!className) {
+      return (
+        <code style={{
+          backgroundColor: 'rgba(142, 150, 170, 0.14)',
+          color: '#c9d1d9',
+          padding: '2px 6px',
+          borderRadius: '6px',
+          fontSize: '0.875em',
+          fontFamily: "'SF Mono', 'Fira Code', 'Consolas', 'Monaco', monospace",
+          fontWeight: 500,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word'
+        }}>
+          {children}
+        </code>
+      );
+    }
+
+    // Code block - ChatGPT style
+    return (
+      <div
+        style={{
+          position: 'relative',
+          marginTop: '16px',
+          marginBottom: '16px',
+          borderRadius: '12px',
+          overflow: 'hidden',
+          backgroundColor: '#0d0d0d',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        {/* Header with language badge and copy button */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '10px 16px',
+          backgroundColor: '#2f2f2f',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)'
+        }}>
+          <span style={{
+            fontSize: '12px',
+            color: '#b4b4b4',
+            fontWeight: 500,
+            letterSpacing: '0.3px'
+          }}>
+            {language || 'plaintext'}
+          </span>
+          <button
+            onClick={handleCopy}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'transparent',
+              border: 'none',
+              padding: '6px 10px',
+              cursor: 'pointer',
+              color: copied ? '#10a37f' : '#b4b4b4',
+              fontSize: '12px',
+              borderRadius: '6px',
+              transition: 'all 0.15s ease',
+              opacity: isHovered || copied ? 1 : 0.7,
+              backgroundColor: isHovered ? 'rgba(255, 255, 255, 0.08)' : 'transparent'
+            }}
+          >
+            {copied ? (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <span>Copiado</span>
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                <span>Copiar código</span>
+              </>
+            )}
+          </button>
+        </div>
+        {/* Code content area */}
+        <div style={{
+          overflow: 'auto',
+          maxHeight: '450px'
+        }}>
+          <pre style={{
+            margin: 0,
+            padding: '16px',
+            fontSize: '13px',
+            lineHeight: '1.6',
+            backgroundColor: '#0d0d0d'
+          }}>
+            <code className={className} style={{
+              fontFamily: "'SF Mono', 'Fira Code', 'Consolas', 'Monaco', monospace",
+              color: '#e6e6e6',
+              display: 'block',
+              tabSize: 2
+            }}>
+              {children}
+            </code>
+          </pre>
+        </div>
+      </div>
+    );
+  };
+
+  // Markdown components configuration
+  const markdownComponents: any = {
+    code: CodeBlock,
+    pre: (props: any) => <>{props.children}</> // Remove default pre wrapper
   };
 
   const handleLiveToggle = async () => {
@@ -964,7 +1209,7 @@ function App() {
                     const lastMsg = chat.messages[chat.messages.length - 1];
                     const prevMsg = chat.messages[chat.messages.length - 2];
                     if (lastMsg && prevMsg && prevMsg.role === 'user') {
-                        return `Tema: ${chat.title}\nUsuario: ${prevMsg.text.substring(0, 100)}...\nLia: ${lastMsg.text?.substring(0, 100)}...`;
+                        return `Tema: ${chat.title}\nUsuario: ${prevMsg.text.substring(0, 100)}...\nSOFLIA: ${lastMsg.text?.substring(0, 100)}...`;
                     }
                     return null;
                 })
@@ -1041,11 +1286,20 @@ function App() {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
         if (tab?.url?.startsWith('chrome://') || tab?.url?.startsWith('edge://') || tab?.url?.startsWith('about:')) {
-          pageContext = '[ERROR: Esta es una página protegida del navegador. Lia no puede acceder al contenido de páginas chrome://, edge:// o about:. Por favor navega a una página web normal para que pueda analizarla.]';
+          pageContext = '[ERROR: Esta es una página protegida del navegador. SOFLIA no puede acceder al contenido de páginas chrome://, edge:// o about:. Por favor navega a una página web normal para que pueda analizarla.]';
         } else if (tab?.id) {
           const response = await chrome.tabs.sendMessage(tab.id, { action: "getStructuredDOM" });
           if (response?.dom) {
-            pageContext = JSON.stringify(response.dom, null, 2);
+            // Extract only the mainContent for analysis (not UI elements with INDEX values)
+            // The mainContent contains the actual text/conversation content
+            const dom = response.dom;
+            if (dom.mainContent) {
+              // For analysis: send only the content, not interactive elements
+              pageContext = `URL: ${dom.url || tab.url}\nTítulo: ${dom.title || ''}\n\nCONTENIDO PRINCIPAL:\n${dom.mainContent}`;
+            } else {
+              // Fallback: send minimal info without interactive elements
+              pageContext = `URL: ${dom.url || tab.url}\nTítulo: ${dom.title || ''}\n\n[No se encontró contenido principal]`;
+            }
           } else {
             pageContext = '[INFO: No se pudo obtener información de la página. Puede que el content script no esté cargado. Intenta recargar la página.]';
           }
@@ -1229,7 +1483,18 @@ function App() {
         return;
       }
 
-      const result = await import('../services/gemini').then(m => m.sendMessageStream(apiMessage, pageContext));
+      // Determine thinking type based on model (Gemini 3 uses 'level', Gemini 2.5 uses 'budget')
+      const currentModelConfig = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
+      const thinkingType = currentModelConfig?.thinkingType || 'level';
+
+      const result = await import('../services/gemini').then(m => m.sendMessageStream(
+        apiMessage,
+        pageContext,
+        { primary: preferredPrimaryModel },
+        undefined, // personalization
+        undefined, // projectContext
+        { mode: thinkingMode as 'off' | 'minimal' | 'low' | 'medium' | 'high', type: thinkingType }
+      ));
 
       let fullText = '';
 
@@ -1402,7 +1667,7 @@ function App() {
 
           <img
             src={liaAvatar}
-            alt="Lia"
+            alt="SOFLIA"
             style={{
               width: '36px',
               height: '36px',
@@ -1421,7 +1686,7 @@ function App() {
               alignItems: 'center',
               gap: '6px'
             }}>
-              Lia
+              SOFLIA
               {isLiveActive && (
                 <span style={{
                   fontSize: '10px',
@@ -1435,44 +1700,44 @@ function App() {
             <span style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>
               {isLiveActive ? 'Conectada en tiempo real' : 'Tu asistente de productividad'}
             </span>
-            
-            {/* Model Selector in Header (Custom Trigger) */}
+
+            {/* Model Selector in Header */}
             <div style={{ marginTop: '2px' }}>
-               <button 
-                  onClick={() => setIsModelSelectorOpen(true)}
-                  style={{
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      borderRadius: '12px',
-                      color: 'var(--color-accent)',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      padding: '4px 10px',
-                      cursor: 'pointer',
-                      outline: 'none',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      transition: 'all 0.2s',
-                  }}
-                  onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
-                  onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
-               >
-                 {(() => {
-                    const current = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
-                    return (
-                        <>
-                            <span>{current?.icon || '⚡'}</span>
-                            <span>{current?.name || 'Gemini 3.0 Flash'}</span>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ opacity: 0.7 }}>
-                                <path d="M6 9l6 6 6-6"/>
-                            </svg>
-                        </>
-                    );
-                 })()}
-               </button>
+              <button
+                onClick={() => setIsModelSelectorOpen(true)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '12px',
+                  color: 'var(--color-accent)',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  outline: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.2s',
+                }}
+                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
+                onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
+              >
+                {(() => {
+                  const current = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
+                  return (
+                    <>
+                      <span>{current?.icon || '⚡'}</span>
+                      <span>{current?.name || 'Gemini 3.0 Flash'}</span>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ opacity: 0.7 }}>
+                        <path d="M6 9l6 6 6-6"/>
+                      </svg>
+                    </>
+                  );
+                })()}
+              </button>
             </div>
-            
+
             {/* Active Mode Indicator in Header */}
             {(isDeepResearch || isImageGenMode || isPromptOptimizerMode || isMeetingMode) && (
               <div style={{
@@ -1555,7 +1820,7 @@ function App() {
         </div>
 
         <div style={{ display: 'flex', gap: '4px', position: 'relative' }}>
-          <button 
+          <button
             onClick={() => setIsSettingsMenuOpen(!isSettingsMenuOpen)}
             style={{
               background: isSettingsMenuOpen ? 'var(--bg-dark-tertiary)' : 'var(--bg-dark-secondary)',
@@ -1748,7 +2013,7 @@ function App() {
           <div style={{ textAlign: 'center', padding: '40px 20px' }}>
             <img
               src={liaAvatar}
-              alt="Lia"
+              alt="SOFLIA"
               style={{
                 width: '80px',
                 height: '80px',
@@ -1759,10 +2024,10 @@ function App() {
               }}
             />
             <h2 style={{ fontSize: '20px', margin: '0 0 8px 0', fontWeight: 600, color: 'var(--color-white)' }}>
-              Hola, soy Lia
+              Hola, soy SOFLIA
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--color-gray-medium)', lineHeight: '1.5', margin: '0 0 24px 0' }}>
-              Tu asistente de productividad para Ecos de Liderazgo. ¿En qué puedo ayudarte?
+              Tu agente inteligente del ecosistema SOFLIA. ¿En qué puedo ayudarte?
             </p>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
@@ -1803,7 +2068,7 @@ function App() {
             {msg.role === 'model' && (
               <img
                 src={liaAvatar}
-                alt="Lia"
+                alt="SOFLIA"
                 style={{
                   width: '28px',
                   height: '28px',
@@ -1814,7 +2079,7 @@ function App() {
               />
             )}
 
-            <div style={{ maxWidth: '85%', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <div style={{ maxWidth: msg.role === 'model' ? '95%' : '85%', display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <div
                 className={msg.role === 'model' ? 'markdown-content' : ''}
                 style={{
@@ -1881,10 +2146,10 @@ function App() {
                 {msg.role === 'model' ? (
                   isLoading && index === messages.length - 1 ? (
                     <div className="markdown-content typing-cursor">
-                         <ReactMarkdown>{msg.text}</ReactMarkdown>
+                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
                     </div>
                   ) : (
-                    <ReactMarkdown>{msg.text}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
                   )
                 ) : (
                   msg.text
@@ -2082,21 +2347,28 @@ function App() {
               {msg.role === 'model' && msg.text && (
                 <div style={{ display: 'flex', gap: '4px', marginLeft: '4px' }}>
                   <button
-                    onClick={() => copyToClipboard(msg.text)}
+                    onClick={() => copyToClipboard(msg.text, msg.id)}
                     style={{
                       background: 'none',
                       border: 'none',
                       padding: '4px',
                       cursor: 'pointer',
-                      color: 'var(--color-gray-medium)',
-                      borderRadius: '4px'
+                      color: copiedId === msg.id ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+                      borderRadius: '4px',
+                      transition: 'color 0.2s'
                     }}
-                    title="Copiar"
+                    title={copiedId === msg.id ? "¡Copiado!" : "Copiar"}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
+                    {copiedId === msg.id ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    )}
                   </button>
                   {/* Like Button */}
                   <button
@@ -2196,7 +2468,7 @@ function App() {
               gap: '12px',
               padding: '16px',
               background: 'transparent',
-              maxWidth: '85%',
+              maxWidth: '95%',
               marginLeft: '36px'
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
@@ -2261,7 +2533,7 @@ function App() {
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <img
               src={liaAvatar}
-              alt="Lia"
+              alt="SOFLIA"
               style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }}
             />
             <div style={{
@@ -2754,6 +3026,137 @@ function App() {
             }}
           />
 
+          {/* Thinking Mode Dropdown */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsThinkingDropdownOpen(!isThinkingDropdownOpen);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '6px 10px',
+                background: 'var(--bg-dark-tertiary)',
+                border: '1px solid var(--border-modal)',
+                borderRadius: '18px',
+                color: 'var(--color-text-primary)',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 500,
+                transition: 'all 0.2s'
+              }}
+            >
+              {(() => {
+                const currentModel = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
+                const options = currentModel?.thinkingOptions || [];
+                const currentOption = options.find((o: any) => o.id === thinkingMode);
+                return currentOption?.name || 'Rápido';
+              })()}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+
+            {/* Thinking Dropdown Menu */}
+            {isThinkingDropdownOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: '100%',
+                  right: 0,
+                  marginBottom: '8px',
+                  background: 'var(--bg-dark-secondary)',
+                  border: '1px solid var(--border-modal)',
+                  borderRadius: '12px',
+                  padding: '8px',
+                  minWidth: '180px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                  zIndex: 100
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Model indicator */}
+                <div style={{
+                  padding: '6px 10px',
+                  marginBottom: '6px',
+                  fontSize: '11px',
+                  color: 'var(--color-gray-medium)',
+                  borderBottom: '1px solid var(--border-modal)'
+                }}>
+                  {preferredPrimaryModel.includes('gemini-3') ? 'Gemini 3' : 'Gemini 2.5'}
+                </div>
+
+                {(() => {
+                  const currentModel = MODEL_OPTIONS.find(m => m.id === preferredPrimaryModel);
+                  const options = currentModel?.thinkingOptions || [];
+                  return options.map((opt: any) => {
+                    const isActive = thinkingMode === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        onClick={() => {
+                          handleThinkingChange(opt.id);
+                          setIsThinkingDropdownOpen(false);
+                        }}
+                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '10px 12px',
+                          background: isActive ? 'rgba(0, 212, 179, 0.1)' : 'transparent',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: isActive ? 'var(--color-accent)' : 'var(--color-white)',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          textAlign: 'left',
+                          transition: 'background 0.2s'
+                        }}
+                      >
+                        {/* Icon based on thinking level */}
+                        {opt.id === 'minimal' || opt.id === 'off' ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                          </svg>
+                        ) : opt.id === 'low' ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+                            <line x1="9" y1="9" x2="9.01" y2="9"></line>
+                            <line x1="15" y1="9" x2="15.01" y2="9"></line>
+                          </svg>
+                        ) : opt.id === 'medium' ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 2a8 8 0 0 0-8 8c0 3.5 2 6 4 8h8c2-2 4-4.5 4-8a8 8 0 0 0-8-8z"></path>
+                            <path d="M9 22h6"></path>
+                            <path d="M9 18h6"></path>
+                          </svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon>
+                          </svg>
+                        )}
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 500 }}>{opt.name}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)' }}>{opt.desc}</div>
+                        </div>
+                        {isActive && (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2.5">
+                            <polyline points="20 6 9 17 4 12"></polyline>
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+          </div>
+
           {/* Mic / Send Button */}
           {hasInput ? (
             <button
@@ -2875,8 +3278,8 @@ function App() {
           justifyContent: 'space-between'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <img src={liaAvatar} alt="Lia" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
-            <span style={{ fontWeight: 600, color: 'var(--color-white)', fontSize: '15px' }}>Lia</span>
+            <img src={liaAvatar} alt="SOFLIA" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
+            <span style={{ fontWeight: 600, color: 'var(--color-white)', fontSize: '15px' }}>SOFLIA</span>
           </div>
           <button
             onClick={() => setIsSidebarOpen(false)}
@@ -3212,7 +3615,7 @@ function App() {
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
               <circle cx="12" cy="7" r="4"></circle>
             </svg>
-            Personalizar Lia
+            Personalizar SOFLIA
           </button>
 
 
@@ -3561,6 +3964,7 @@ function App() {
                     );
                  })}
               </div>
+
            </div>
         </div>
       )}

@@ -292,15 +292,179 @@ export const startChatSession = (history: any[] = []) => {
   chatSession = primaryModel.startChat({
     history: history,
     generationConfig: {
-      maxOutputTokens: 2000,
+      maxOutputTokens: 16384,
     },
   });
   return chatSession;
 };
 
+// Thinking config types
+// Gemini 3: uses thinkingLevel ("minimal", "low", "medium", "high")
+// Gemini 2.5: uses thinkingBudget (0 to 24576 tokens, or -1 for dynamic)
+export interface ThinkingConfig {
+  mode: 'off' | 'minimal' | 'low' | 'medium' | 'high';
+  type: 'level' | 'budget'; // Gemini 3 uses 'level', Gemini 2.5 uses 'budget'
+}
+
+// Budget values for Gemini 2.5 (0 = off for Flash, 128-24576 range)
+const THINKING_BUDGETS: Record<string, number> = {
+  off: 0,
+  minimal: 0,
+  low: 1024,
+  medium: 8192,
+  high: 24576
+};
+
+// ============================================
+// DEEP ANALYSIS DETECTION AND BOOST
+// ============================================
+const DEEP_ANALYSIS_TRIGGERS = [
+  'analiza profundamente', 'analiza a fondo', 'análisis profundo', 'análisis detallado',
+  'analizar profundamente', 'analizar a fondo', 'análisis exhaustivo', 'analiza completamente',
+  'análisis completo', 'profundiza', 'explica a fondo', 'explica en detalle',
+  'explicación detallada', 'quiero todos los detalles', 'dime todo sobre', 'cuéntame todo',
+  'análisis extenso', 'deep analysis', 'full analysis', 'dame un análisis completo',
+  'analiza la pagina', 'analiza la página', 'analiza esta pagina', 'analiza esta página'
+];
+
+const needsDeepAnalysis = (message: string): boolean => {
+  const lowerMessage = message.toLowerCase();
+  return DEEP_ANALYSIS_TRIGGERS.some(trigger => lowerMessage.includes(trigger));
+};
+
+// Prompt COMPLETAMENTE SEPARADO para análisis profundo
+const DEEP_ANALYSIS_ONLY_PROMPT = `Eres Lia, una analista de contenido. Tu tarea es analizar el CONTENIDO INTELECTUAL de la página.
+
+═══════════════════════════════════════════════════════════════════
+🚫 PROHIBICIONES ABSOLUTAS - NUNCA HAGAS ESTO:
+═══════════════════════════════════════════════════════════════════
+
+NUNCA menciones ni analices:
+- "Elementos de la Interfaz" o "Interfaz de Usuario"
+- "Modelo Utilizado" o qué versión de ChatGPT/IA se usa
+- "Barra Lateral" o contenido del sidebar
+- "Historial de chats" o proyectos listados
+- "Campo de texto", "botones", o elementos interactivos
+- "Estado del navegador" o "Estado actual de la página"
+- CUALQUIER cosa sobre la UI, DOM, o estructura técnica de la página
+
+NUNCA crees secciones como:
+- "Elementos de la Interfaz"
+- "Estructura de la Página" (en sentido técnico/UI)
+- "Herramientas Observadas"
+- "Modelo en Uso"
+
+═══════════════════════════════════════════════════════════════════
+✅ ANALIZA ÚNICAMENTE EL CONTENIDO INTELECTUAL:
+═══════════════════════════════════════════════════════════════════
+
+- Las IDEAS y CONCEPTOS que se discuten
+- Las ESTRATEGIAS y METODOLOGÍAS propuestas
+- Los ARGUMENTOS y su justificación
+- Los FRAMEWORKS o modelos conceptuales (como "Alex Hormozi Style", "Ecuación de Valor")
+- Las PROPUESTAS concretas y recomendaciones
+- Los BENEFICIOS y resultados esperados
+- Los PÚBLICOS OBJETIVO mencionados en el contenido
+- Las ACCIONES sugeridas dentro de la discusión
+
+═══════════════════════════════════════════════════════════════════
+
+REQUISITO: Tu respuesta debe tener MÍNIMO 3000 palabras analizando el CONTENIDO, no la interfaz.
+
+FORMATO OBLIGATORIO - USA EXACTAMENTE ESTA ESTRUCTURA:
+
+## 📋 RESUMEN EJECUTIVO
+[Escribe MÍNIMO 200 palabras sobre el tema central, propósito y relevancia del CONTENIDO discutido]
+
+## 🎯 TEMA CENTRAL Y CONTEXTO
+### Tema Principal
+[Párrafo de 100+ palabras describiendo el tema central]
+### Contexto del Contenido
+[Dónde se enmarca, es parte de qué proyecto o conversación]
+### Origen y Autoría
+[Quién lo creó, cuándo, con qué propósito]
+### Propósito Identificado
+[Qué intenta lograr el contenido]
+
+## 🔍 DESGLOSE DETALLADO DEL CONTENIDO
+[Crea UNA SUBSECCIÓN ### para CADA concepto importante. Mínimo 8-10 subsecciones]
+
+### [Concepto/Tema 1]
+- **Descripción completa**: [50+ palabras]
+- **Rol en el contexto**: [Por qué importa]
+- **Detalles técnicos**: [Especificaciones si las hay]
+- **Implicaciones prácticas**: [Qué significa en la práctica]
+- **Conexiones**: [Cómo se relaciona con otros elementos]
+
+### [Concepto/Tema 2]
+[Repite la misma estructura]
+
+[...continúa con TODOS los conceptos...]
+
+## 🏗️ ARQUITECTURA Y ESTRUCTURA
+[Mínimo 150 palabras sobre cómo está organizado el contenido]
+
+## 💡 IDEAS CLAVE Y PROPUESTAS
+[Lista numerada con TODAS las ideas. Cada una con 50+ palabras de explicación]
+1. **[Idea]**: [Explicación extensa]
+2. ...
+
+## 🔧 ASPECTOS TÉCNICOS (USA TABLA OBLIGATORIAMENTE)
+| Tecnología/Herramienta | Descripción | Función/Rol | Beneficio |
+|------------------------|-------------|-------------|-----------|
+| [Nombre] | [Qué es] | [Para qué sirve] | [Qué aporta] |
+| ... | ... | ... | ... |
+
+## 📊 DATOS Y EVIDENCIAS
+| Dato/Métrica | Valor | Contexto | Significado |
+|--------------|-------|----------|-------------|
+| [Nombre del dato] | [Valor] | [Dónde se menciona] | [Qué implica] |
+
+## 👥 STAKEHOLDERS (USA TABLA OBLIGATORIAMENTE)
+| Actor/Rol | Descripción | Interés | Responsabilidad |
+|-----------|-------------|---------|-----------------|
+| [Nombre/Rol] | [Quién es] | [Qué busca] | [Qué hace] |
+| ... | ... | ... | ... |
+
+## ⚡ ACCIONES IDENTIFICADAS (USA CHECKLIST)
+- [ ] **[Acción 1]**: [Descripción detallada y contexto]
+- [ ] **[Acción 2]**: [Descripción detallada y contexto]
+- [ ] **[Acción 3]**: [Descripción detallada y contexto]
+
+## 🔗 CONEXIONES Y RELACIONES
+[Muestra las relaciones entre conceptos usando flechas y texto:]
+Concepto A → Concepto B → Resultado
+          ↓
+     Concepto C
+
+## 💭 ANÁLISIS CRÍTICO
+### Fortalezas
+[Lista con explicaciones]
+### Áreas de Mejora
+[Lista con explicaciones]
+### Riesgos
+[Lista con explicaciones]
+
+## 📝 CONCLUSIÓN INTEGRAL
+[MÍNIMO 250 palabras sintetizando todo, implicaciones y recomendaciones]
+
+---
+═══════════════════════════════════════════════════════════════════
+REGLAS CRÍTICAS PARA FORMATO VISUAL:
+═══════════════════════════════════════════════════════════════════
+1. TABLAS SON OBLIGATORIAS en: Aspectos Técnicos, Stakeholders, Datos
+2. USA CHECKLIST (- [ ]) para acciones y tareas
+3. USA DIAGRAMAS ASCII para mostrar relaciones y flujos
+4. Cada sección debe tener contenido EXTENSO, no solo bullets
+5. NUNCA termines preguntando si quiero más detalles
+6. USA negritas **así** para términos importantes
+7. USA código \`así\` para términos técnicos
+8. Responde SIEMPRE en español
+═══════════════════════════════════════════════════════════════════`;
+
 export async function sendMessageStream(
-  message: string, 
-  context?: string, 
+  message: string,
+  context?: string,
   modelOverrides?: { primary?: string; fallback?: string },
   personalization?: {
     nickname?: string;
@@ -309,21 +473,49 @@ export async function sendMessageStream(
     about?: string;
     instructions?: string;
   },
-  projectContext?: string
+  projectContext?: string,
+  thinkingConfig?: ThinkingConfig
 ) {
   // Determine IDs
   const primaryId = modelOverrides?.primary || MODELS.PRIMARY;
   const fallbackId = modelOverrides?.fallback || MODELS.FALLBACK;
-  
+
   // Detect Computer Use
   const useComputerUse = needsComputerUse(message);
-  
+
   // Decide active model
   const activeModelId = useComputerUse ? MODELS.COMPUTER_USE : primaryId;
 
+  // Detect if user wants deep analysis
+  // Log the message for debugging
+  console.log('🔎 Message received:', message.substring(0, 200) + '...');
+  console.log('🔎 Checking for deep analysis triggers...');
+
+  const isDeepAnalysis = needsDeepAnalysis(message);
+
+  console.log('🔎 Deep analysis detected:', isDeepAnalysis);
+
+  if (isDeepAnalysis) {
+    console.log('🔍 DEEP ANALYSIS MODE ACTIVATED - Using DEEP_ANALYSIS_ONLY_PROMPT');
+  } else {
+    console.log('📝 Normal mode - Using PRIMARY_CHAT_PROMPT');
+  }
+
   // Build Personalized System Instruction
-  let systemInstruction = PRIMARY_CHAT_PROMPT;
-  
+  // IMPORTANT: For deep analysis, put the boost FIRST (LLMs prioritize earlier instructions)
+  let systemInstruction: string;
+
+  if (isDeepAnalysis && !useComputerUse) {
+    // Deep analysis: use ONLY the deep analysis prompt (it's self-contained)
+    // Don't append PRIMARY_CHAT_PROMPT to avoid conflicting instructions
+    systemInstruction = DEEP_ANALYSIS_ONLY_PROMPT;
+    console.log('✅ System instruction set to: DEEP_ANALYSIS_ONLY_PROMPT');
+    console.log('📏 Prompt length:', systemInstruction.length, 'chars');
+  } else {
+    systemInstruction = PRIMARY_CHAT_PROMPT;
+    console.log('📝 System instruction set to: PRIMARY_CHAT_PROMPT');
+  }
+
   if (!useComputerUse && personalization) {
       let personality = "\n\n=== USER PERSONALIZATION SETTINGS ===\n";
       if (personalization.nickname) personality += `User's Name/Nickname: "${personalization.nickname}". Address them by this name occasionally.\n`;
@@ -332,7 +524,7 @@ export async function sendMessageStream(
       if (personalization.about) personality += `More about User: ${personalization.about}\n`;
       if (personalization.instructions) personality += `CUSTOM INSTRUCTIONS (PRIORITY): ${personalization.instructions}\n`;
       personality += "=====================================\n";
-      
+
       systemInstruction = systemInstruction + personality;
   }
 
@@ -341,29 +533,61 @@ export async function sendMessageStream(
       systemInstruction += `\n\n=== PROJECT CONTEXT (SHARED KNOWLEDGE) ===\nThe user has grouped this chat in a project folder. Here is relevant context from other chats in the same project:\n\n${projectContext}\n\nUse this information to provide more cohesive and context-aware responses across the project.\n==========================================\n`;
   }
 
+  // Build generation config with thinking settings
+  const generationConfig: any = { maxOutputTokens: 16384 };
+
+  // Apply thinking config if provided
+  if (thinkingConfig) {
+    if (thinkingConfig.type === 'level') {
+      // Gemini 3 models use thinkingLevel: "minimal", "low", "medium", "high"
+      // "minimal" = fastest, "high" = deepest reasoning
+      const validLevels = ['minimal', 'low', 'medium', 'high'];
+      const level = validLevels.includes(thinkingConfig.mode) ? thinkingConfig.mode : 'minimal';
+      generationConfig.thinkingConfig = {
+        thinkingLevel: level
+      };
+      console.log('Thinking Level:', level);
+    } else {
+      // Gemini 2.5 models use thinkingBudget (token count: 0-24576, or -1 for dynamic)
+      const budget = THINKING_BUDGETS[thinkingConfig.mode] ?? 0;
+      // Only set thinkingConfig if budget > 0 (0 means no thinking)
+      if (budget > 0) {
+        generationConfig.thinkingConfig = {
+          thinkingBudget: budget
+        };
+        console.log('Thinking Budget:', budget);
+      } else {
+        console.log('Thinking: Off (budget = 0)');
+      }
+    }
+  }
+
   // Initialize specific model instance dynamically
-  const activeModelInstance = useComputerUse 
-    ? computerUseModel 
-    : genAI.getGenerativeModel({ 
+  const activeModelInstance = useComputerUse
+    ? computerUseModel
+    : genAI.getGenerativeModel({
         model: activeModelId,
         tools: searchTools, // Assuming primary/chosen model supports search
-        systemInstruction: systemInstruction 
+        systemInstruction: systemInstruction
       });
 
   console.log('=== GEMINI SERVICE ===');
   console.log('Model:', activeModelId);
+  console.log('Deep Analysis Mode:', isDeepAnalysis);
+  console.log('System Instruction Preview:', systemInstruction.substring(0, 100) + '...');
   console.log('Personalization:', !!personalization);
+  console.log('Thinking Config:', thinkingConfig);
 
   // Handle Session Logic - ALWAYS refresh session to apply system prompt updates or model changes
   let currentHistory: any[] = [];
   if (chatSession) {
     try { currentHistory = await chatSession.getHistory(); } catch {}
   }
-  
+
   // Start fresh session with history to ensure new System Prompt applies
   chatSession = activeModelInstance.startChat({
      history: currentHistory,
-     generationConfig: { maxOutputTokens: 2000 }
+     generationConfig
   });
 
   // Build Prompt
@@ -393,9 +617,15 @@ export async function sendMessageStream(
       if (useComputerUse) throw primaryError; // No fallback for computer use
 
       const history = await chatSession.getHistory();
-      const fallbackInstance = genAI.getGenerativeModel({ model: fallbackId });
-      
-      const fallbackChat = fallbackInstance.startChat({ history });
+      const fallbackInstance = genAI.getGenerativeModel({
+        model: fallbackId,
+        systemInstruction: systemInstruction
+      });
+
+      const fallbackChat = fallbackInstance.startChat({
+        history,
+        generationConfig // Apply same generation config (maxOutputTokens, thinking, etc)
+      });
       chatSession = fallbackChat; // Update global session
 
       const result = await fallbackChat.sendMessageStream(prompt);

@@ -1,4 +1,4 @@
-console.log('Lia Extension Background Service Worker running');
+console.log('SOFLIA Agent Background Service Worker running');
 
 // Store pending selection to send to popup when it opens
 let pendingSelection: { action: string; text: string; prompt: string } | null = null;
@@ -15,11 +15,11 @@ interface MeetingCaptureInfo {
 let activeMeetingCapture: MeetingCaptureInfo | null = null;
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('Lia Extension installed');
+  console.log('SOFLIA Agent installed');
   
-  // Enables the side panel to open when the action icon is clicked
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((error) => console.error(error));
+  // Disable side panel on click to allow popup to open (Modal mode)
+  // chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+  //   .catch((error) => console.error(error));
     
   // Inject content script into all existing tabs
   chrome.tabs.query({}, (tabs) => {
