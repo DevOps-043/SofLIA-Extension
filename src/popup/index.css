@@ -1,14 +1,442 @@
-body {
-  margin: 0;
-  width: 300px;
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu",
-    "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+:root {
+  /* Core Colors */
+  --color-primary: #0a2540;
+  --color-accent: #00d4b3;
+  --color-white: #ffffff;
+
+  /* Secondary Colors */
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-gray-light: #e9ecef;
+  --color-gray-medium: #6c757d;
+
+  /* Dark Mode Colors (Default) */
+  --bg-dark-main: #0f1419;
+  --bg-dark-secondary: #1e2329;
+  --bg-dark-tertiary: #0a0d12;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* Border Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --color-on-accent: #000000; /* Black text on bright green accent */
 }
 
-code {
-  font-family:
-    source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+html[data-theme="light"] {
+  --bg-dark-main: #ffffff;
+  --bg-dark-secondary: #f8f9fa; /* Lighter gray for secondary backgrounds in light mode */
+  --bg-dark-tertiary: #e9ecef;
+  --color-white: #0a2540; /* Text color becomes Deep Blue */
+  --color-gray-light: #495057;
+  --color-gray-medium: #6c757d;
+  --color-accent: #0a2540; /* Accent becomes Deep Blue in light mode as requested */
+  --color-on-accent: #ffffff; /* White text on dark blue accent */
+  
+  /* Modal & Dropdown specific overrides */
+  --bg-modal: #ffffff;
+  --border-modal: #e9ecef;
+  --shadow-modal: 0 4px 20px rgba(0,0,0,0.1);
 }
+
+html[data-theme="dark"] {
+  --bg-dark-main: #0f1419;
+  --bg-dark-secondary: #1e2329;
+  --bg-dark-tertiary: #0a0d12;
+  --bg-modal: #1e2329;
+  --border-modal: rgba(255, 255, 255, 0.1);
+  --shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --color-on-accent: #000000;
+}
+/* Default fallback */
+  /* Create a new :root block or merge with existing? Safer to just update the existing :root at the top and remove the bottom one */
+
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Inter", sans-serif;
+  background-color: var(--bg-dark-main);
+  color: var(--color-white);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-width: 400px; /* Ensure minimum size for popup */
+  min-height: 600px;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+html {
+  background-color: var(--bg-dark-main);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-dark-tertiary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-dark-secondary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-medium);
+}
+
+/* Utilities */
+.text-accent {
+  color: var(--color-accent);
+}
+.text-secondary {
+  color: var(--color-gray-medium);
+}
+.bg-secondary {
+  background-color: var(--bg-dark-secondary);
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: var(--color-white);
+  border: none;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background-color: #0d2f4d; /* Slightly lighter version for hover */
+  transform: translateY(-1px);
+}
+
+.card {
+  background-color: var(--bg-dark-secondary);
+  border: 1px solid var(--color-gray-medium);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+/* Markdown Content Styles - ChatGPT-like Design */
+.markdown-content {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--color-white);
+}
+
+.markdown-content > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  color: var(--color-white);
+  margin: 20px 0 12px 0;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.markdown-content h1 {
+  font-size: 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.markdown-content h2 {
+  font-size: 16px;
+}
+
+.markdown-content h3 {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.markdown-content h4 {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.markdown-content p {
+  margin: 12px 0;
+  line-height: 1.7;
+}
+
+.markdown-content strong {
+  color: var(--color-white);
+  font-weight: 600;
+}
+
+.markdown-content em {
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+
+.markdown-content li {
+  margin: 6px 0;
+  line-height: 1.6;
+}
+
+.markdown-content li::marker {
+  color: var(--color-accent);
+}
+
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin: 4px 0;
+}
+
+/* Inline code - ChatGPT style */
+.markdown-content code:not(pre code) {
+  background-color: rgba(142, 150, 170, 0.14);
+  color: #c9d1d9;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-size: 0.875em;
+  font-weight: 500;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Code blocks - handled by CodeBlock component, but fallback styles */
+.markdown-content pre {
+  margin: 16px 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background-color: #0d0d0d;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 16px;
+  color: #e6e6e6;
+  font-size: 13px;
+  line-height: 1.6;
+  display: block;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+}
+
+.markdown-content a {
+  color: var(--color-accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 16px 0;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0 8px 8px 0;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.markdown-content blockquote p {
+  margin: 0;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 20px 0;
+}
+
+/* Tables - ChatGPT-like design */
+.markdown-content table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  margin: 20px 0;
+  font-size: 13px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.markdown-content th {
+  background: linear-gradient(135deg, rgba(0, 212, 179, 0.15) 0%, rgba(0, 212, 179, 0.05) 100%);
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  border-bottom: 2px solid var(--color-accent);
+}
+
+.markdown-content td {
+  background-color: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.markdown-content tr:nth-child(even) td {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.markdown-content tr:hover td {
+  background-color: rgba(0, 212, 179, 0.08);
+}
+
+.markdown-content tr:last-child td {
+  border-bottom: none;
+}
+
+/* Task lists - checkbox styling */
+.markdown-content input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  margin-right: 10px;
+  cursor: pointer;
+  vertical-align: middle;
+  position: relative;
+  background: transparent;
+}
+
+.markdown-content input[type="checkbox"]:checked {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.markdown-content input[type="checkbox"]:checked::after {
+  content: '✓';
+  position: absolute;
+  color: black;
+  font-size: 12px;
+  font-weight: bold;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.markdown-content li:has(input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -20px;
+}
+
+/* Typing Animation */
+.typing-dot {
+  color: var(--color-gray-medium);
+  animation: typingBounce 1s infinite;
+  display: inline-block;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Button Hover Effects */
+button:hover {
+  opacity: 0.9;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+/* Recording Animation */
+@keyframes recording-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.recording {
+  animation: recording-pulse 1.5s infinite;
+}
+
+/* Smooth Transitions */
+* {
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 0.15s;
+  transition-timing-function: ease-out;
+}
+
+input, textarea {
+  transition: none;
+}
+
+/* Typewriter Cursor */
+.typing-cursor::after {
+  content: '▋';
+  display: inline-block;
+  vertical-align: baseline;
+  animation: blink 1s step-end infinite;
+  margin-left: 2px;
+  color: var(--color-accent);
+  font-size: 0.9em;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+

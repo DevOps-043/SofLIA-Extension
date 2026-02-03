@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:ai.google.dev)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:skywork.ai)",
+      "WebFetch(domain:docs.cloud.google.com)",
+      "Bash(findstr:*)",
+      "Bash(npm install)",
+      "Bash(npm view:*)",
+      "Bash(npm run build:*)",
+      "Bash(cmd /c \"type .env\")",
+      "Bash(git checkout:*)",
+      "Bash(xargs cat:*)",
+      "Bash(npm install:*)",
+      "WebFetch(domain:www.theunwindai.com)",
+      "Bash(npm show:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(grep:*)",
+      "Bash(openssl genrsa:*)",
+      "Bash(openssl rsa:*)",
+      "Bash(base64:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}
