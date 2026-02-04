@@ -6,36 +6,6 @@ let pendingSelection: { action: string; text: string; prompt: string } | null = 
 // Track which tabs already have the content script
 const injectedTabs = new Set<number>();
 
-// Track active meeting capture streams
-interface MeetingCaptureInfo {
-  tabId: number;
-  streamId: string;
-  startTime: number;
-}
-let activeMeetingCapture: MeetingCaptureInfo | null = null;
-
-// ============================================
-// AUTO-MEETING STATE (like Tactiq background)
-// Buffers captions while popup is closed so
-// they can be shown the moment popup opens.
-// ============================================
-interface AutoCaption {
-  speaker: string;
-  text: string;
-  timestamp: number;
-}
-
-interface AutoMeetingState {
-  tabId: number;
-  platform: string;
-  title: string;
-  url: string;
-  isActive: boolean;
-  captions: AutoCaption[];
-}
-
-let autoMeetingState: AutoMeetingState | null = null;
-
 // Open side panel on icon click (runs every time the service worker starts)
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error('setPanelBehavior:', error));
@@ -55,9 +25,9 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Check if URL is injectable (not chrome://, edge://, about:, etc.)
 function isInjectableUrl(url: string): boolean {
-  return !url.startsWith('chrome://') && 
+  return !url.startsWith('chrome://') &&
          !url.startsWith('chrome-extension://') &&
-         !url.startsWith('edge://') && 
+         !url.startsWith('edge://') &&
          !url.startsWith('about:') &&
          !url.startsWith('moz-extension://') &&
          !url.startsWith('file://');
@@ -69,7 +39,7 @@ async function injectContentScript(tabId: number) {
   if (injectedTabs.has(tabId)) {
     return;
   }
-  
+
   try {
     // First check if content script is already running
     await chrome.tabs.sendMessage(tabId, { action: 'ping' });
@@ -103,11 +73,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // Clean up when tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
-  // Clear auto-meeting state if the meeting tab was closed
-  if (autoMeetingState && autoMeetingState.tabId === tabId) {
-    console.log('Background: Meeting tab closed, clearing auto-meeting state');
-    autoMeetingState = null;
-  }
 });
 
 // Handle messages from content script
@@ -120,23 +85,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   }
-  
+
   if (message.type === 'SELECTION_ACTION') {
     pendingSelection = {
       action: message.action,
       text: message.text,
       prompt: message.prompt
     };
-    
+
     console.log('Selection action received:', message.action);
-    
+
     // Open the side panel
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       if (tabs[0]?.id) {
         try {
           await chrome.sidePanel.open({ tabId: tabs[0].id });
           console.log('Side panel opened');
-          
+
           // Small delay then notify the popup
           setTimeout(() => {
             chrome.runtime.sendMessage({ type: 'PENDING_SELECTION_AVAILABLE' }).catch(() => {
@@ -148,7 +113,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
     });
-    
+
     sendResponse({ success: true });
   }
 
@@ -159,19 +124,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       text: message.text,
       prompt: ''
     };
-    
+
     // Notify popup if it's open
-    chrome.runtime.sendMessage({ 
+    chrome.runtime.sendMessage({
       type: 'SELECTION_UPDATED',
       text: message.text,
       action: 'preview'
     }).catch(() => {
       // Popup closed, expected
     });
-    
+
     sendResponse({ success: true });
   }
-  
+
   if (message.type === 'GET_PENDING_SELECTION') {
     const selection = pendingSelection;
     console.log('GET_PENDING_SELECTION called, returning:', selection ? 'has data' : 'null');
@@ -180,177 +145,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       pendingSelection = null;
     }
     sendResponse(selection);
-  }
-
-  // ============================================
-  // MEETING TAB CAPTURE HANDLERS
-  // ============================================
-
-  if (message.type === 'START_TAB_AUDIO_CAPTURE') {
-    const { tabId } = message;
-    console.log('Starting tab audio capture for tab:', tabId);
-
-    // Check if already capturing
-    if (activeMeetingCapture && activeMeetingCapture.tabId === tabId) {
-      console.log('Already capturing from this tab');
-      sendResponse({ error: 'Ya se está capturando audio de esta pestaña' });
-      return true;
-    }
-
-    // Stop any existing capture first
-    if (activeMeetingCapture) {
-      console.log('Stopping previous capture');
-      activeMeetingCapture = null;
-    }
-
-    // In Manifest V3, we use getMediaStreamId instead of capture
-    // The actual MediaStream must be created in the popup/side panel context
-    chrome.tabCapture.getMediaStreamId(
-      { targetTabId: tabId },
-      (streamId) => {
-        if (chrome.runtime.lastError) {
-          console.error('Tab capture error:', chrome.runtime.lastError.message);
-          sendResponse({ error: chrome.runtime.lastError.message });
-          return;
-        }
-
-        if (!streamId) {
-          console.error('No stream ID received from tabCapture');
-          sendResponse({ error: 'No se pudo obtener el ID de stream de la pestaña' });
-          return;
-        }
-
-        // Store capture info
-        activeMeetingCapture = {
-          tabId,
-          streamId,
-          startTime: Date.now()
-        };
-
-        console.log('Tab audio capture stream ID obtained:', streamId);
-
-        // Return the stream ID - the popup will create the actual MediaStream
-        sendResponse({
-          success: true,
-          streamId,
-          message: 'ID de stream obtenido'
-        });
-      }
-    );
-
-    return true; // Keep channel open for async response
-  }
-
-  if (message.type === 'GET_TAB_CAPTURE_STREAM_ID') {
-    const { tabId } = message;
-    console.log('Getting stream ID for tab:', tabId);
-
-    chrome.tabCapture.getMediaStreamId(
-      { targetTabId: tabId },
-      (streamId) => {
-        if (chrome.runtime.lastError) {
-          console.error('getMediaStreamId error:', chrome.runtime.lastError.message);
-          sendResponse({ error: chrome.runtime.lastError.message });
-          return;
-        }
-
-        console.log('Got stream ID:', streamId);
-        sendResponse({ streamId });
-      }
-    );
-
-    return true; // Keep channel open for async response
-  }
-
-  if (message.type === 'STOP_TAB_AUDIO_CAPTURE') {
-    console.log('Stopping tab audio capture');
-
-    if (activeMeetingCapture) {
-      activeMeetingCapture = null;
-      console.log('Tab audio capture stopped');
-      sendResponse({ success: true, message: 'Captura de audio detenida' });
-    } else {
-      sendResponse({ success: true, message: 'No había captura activa' });
-    }
-
-    return true;
-  }
-
-  if (message.type === 'GET_MEETING_CAPTURE_STATE') {
-    sendResponse({
-      isCapturing: activeMeetingCapture !== null,
-      captureInfo: activeMeetingCapture
-    });
-    return true;
-  }
-
-  if (message.type === 'CHECK_TAB_CAPTURE_PERMISSION') {
-    // Check if we have tab capture permission
-    chrome.permissions.contains(
-      { permissions: ['tabCapture'] },
-      (hasPermission) => {
-        sendResponse({ hasPermission });
-      }
-    );
-    return true;
-  }
-
-  // ============================================
-  // AUTO-MEETING HANDLERS (Tactiq-style background)
-  // ============================================
-
-  if (message.type === 'MEETING_AUTO_DETECTED') {
-    const tabId = sender.tab?.id;
-    if (tabId) {
-      console.log('Background: Meeting auto-detected in tab', tabId, message.title);
-      autoMeetingState = {
-        tabId,
-        platform: message.platform || 'google-meet',
-        title: message.title || '',
-        url: message.url || '',
-        isActive: true,
-        captions: autoMeetingState?.tabId === tabId ? autoMeetingState.captions : []
-      };
-      // Relay to popup if open (popup listens for this to auto-enter meeting mode)
-      chrome.runtime.sendMessage({ type: 'AUTO_MEETING_DETECTED', state: autoMeetingState }).catch(() => {});
-    }
-    sendResponse({ received: true });
-    return true;
-  }
-
-  if (message.type === 'CAPTION_RECEIVED') {
-    // Buffer caption so popup can load them on open
-    if (autoMeetingState && sender.tab?.id === autoMeetingState.tabId) {
-      autoMeetingState.captions.push({
-        speaker: message.speaker || 'Participante',
-        text: message.text || '',
-        timestamp: message.timestamp || Date.now()
-      });
-      // Keep last 500 captions (sufficient for a long meeting)
-      if (autoMeetingState.captions.length > 500) {
-        autoMeetingState.captions.shift();
-      }
-    }
-    // Relay to popup (MeetingPanel's direct listener will catch it if open)
-    chrome.runtime.sendMessage({ type: 'CAPTION_RECEIVED', speaker: message.speaker, text: message.text, timestamp: message.timestamp }).catch(() => {});
-    sendResponse({ received: true });
-    return true;
-  }
-
-  if (message.type === 'MEETING_ENDED') {
-    // Content script detected navigation away from meeting
-    if (autoMeetingState && sender.tab?.id === autoMeetingState.tabId) {
-      console.log('Background: Meeting ended (navigation away)');
-      autoMeetingState.isActive = false;
-    }
-    sendResponse({ received: true });
-    return true;
-  }
-
-  if (message.type === 'GET_AUTO_MEETING_STATE') {
-    // Popup asks on mount: "is there an active meeting with captions?"
-    sendResponse(autoMeetingState);
-    return true;
   }
 
   return true;

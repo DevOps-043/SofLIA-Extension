@@ -8,7 +8,6 @@ import { supabase } from '../lib/supabase';
 import { SettingsModal } from './SettingsModal';
 import { FeedbackModal as _FeedbackModal } from './FeedbackModal';
 import { MapViewer } from '../components/MapViewer';
-import { MeetingPanel } from '../components/MeetingPanel';
 import { ProjectHub } from '../components/ProjectHub';
 
 interface GroundingSource {
@@ -296,31 +295,6 @@ function App() {
 
   // Personalization Settings
   const [_userSettings, setUserSettings] = useState<UserSettings | null>(null);
-
-  // Meeting Mode
-  const [isMeetingMode, setIsMeetingMode] = useState(false);
-
-  // Auto-detect meeting on popup open (like Tactiq: no user click needed)
-  useEffect(() => {
-    // Ask background: "is there an active meeting right now?"
-    chrome.runtime.sendMessage({ type: 'GET_AUTO_MEETING_STATE' }, (state: any) => {
-      if (chrome.runtime.lastError) return;
-      if (state?.isActive && state?.captions?.length > 0) {
-        console.log('App: Auto-meeting detected with', state.captions.length, 'buffered captions → entering meeting mode');
-        setIsMeetingMode(true);
-      }
-    });
-
-    // Also listen for live detection events (meeting starts AFTER popup opens)
-    const listener = (message: any) => {
-      if (message?.type === 'AUTO_MEETING_DETECTED') {
-        console.log('App: Received AUTO_MEETING_DETECTED live event');
-        setIsMeetingMode(true);
-      }
-    };
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
-  }, []);
 
   // Debounce ref for saving
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1399,7 +1373,7 @@ function App() {
       // Check for Maps/Location Intent automatically
       const { runMapsQuery, needsMapsGrounding } = await import('../services/gemini');
       
-      if (needsMapsGrounding(apiMessage) && !isImageGenMode && !isDeepResearch && !isMeetingMode) {
+      if (needsMapsGrounding(apiMessage) && !isImageGenMode && !isDeepResearch) {
          try {
              // 1. Try to get user location on the fly
              let locationToUse = userLocation;
@@ -1770,7 +1744,7 @@ function App() {
         {/* Right: Mode badge + Settings - all inline */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           {/* Active Mode Indicator - compact pill */}
-          {(isDeepResearch || isImageGenMode || isPromptOptimizerMode || isMeetingMode) && (
+          {(isDeepResearch || isImageGenMode || isPromptOptimizerMode) && (
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -1779,14 +1753,12 @@ function App() {
               background: isDeepResearch ? 'rgba(0, 212, 179, 0.12)' :
                          isImageGenMode ? 'rgba(168, 85, 247, 0.12)' :
                          isPromptOptimizerMode ? 'rgba(251, 191, 36, 0.12)' :
-                         isMeetingMode ? 'rgba(6, 182, 212, 0.12)' :
                          'rgba(59, 130, 246, 0.12)',
               borderRadius: '8px',
               fontSize: '10px',
               color: isDeepResearch ? '#00d4b3' :
                      isImageGenMode ? '#a855f7' :
                      isPromptOptimizerMode ? '#fbbf24' :
-                     isMeetingMode ? '#06b6d4' :
                      '#3b82f6',
               fontWeight: 500
             }}>
@@ -1809,16 +1781,10 @@ function App() {
                   <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
                 </svg>
               )}
-              {isMeetingMode && (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              )}
               <span className="hide-text-on-compact" style={{ maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {isDeepResearch ? 'Research' :
                  isImageGenMode ? 'Imagen' :
                  isPromptOptimizerMode ? 'Optimizar' :
-                 isMeetingMode ? 'Reunión' :
                  ''}
               </span>
               <button
@@ -1826,7 +1792,6 @@ function App() {
                   setIsDeepResearch(false);
                   setIsImageGenMode(false);
                   setIsPromptOptimizerMode(false);
-                  setIsMeetingMode(false);
                   setTargetAI(null);
                 }}
                 style={{
@@ -1977,18 +1942,8 @@ function App() {
         </div>
       </header>
 
-      {/* Meeting Panel - Shows when meeting mode is active */}
-      {isMeetingMode && (
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <MeetingPanel
-            userId={user?.id || ''}
-            onClose={() => setIsMeetingMode(false)}
-          />
-        </div>
-      )}
-
       {/* Project Hub - Shows when folder is selected and no active chat */}
-      {currentFolderId && !currentChatId && !isMeetingMode && (
+      {currentFolderId && !currentChatId && (
         <ProjectHub
           folder={folders.find(f => f.id === currentFolderId)!}
           chats={chatHistory.filter(c => c.folderId === currentFolderId)}
@@ -2033,8 +1988,8 @@ function App() {
         />
       )}
 
-      {/* Main Chat Area - Hidden when meeting mode is active or Project Hub is active */}
-      {!isMeetingMode && (!currentFolderId || currentChatId) && (
+      {/* Main Chat Area - Hidden when Project Hub is active */}
+      {(!currentFolderId || currentChatId) && (
       <main style={{
         flex: 1,
         overflowY: 'auto',
@@ -2591,8 +2546,8 @@ function App() {
       </main>
       )}
 
-      {/* Input Area - Hidden when meeting mode is active OR in Project Hub */}
-      {!isMeetingMode && (!currentFolderId || currentChatId) && (
+      {/* Input Area - Hidden when in Project Hub */}
+      {(!currentFolderId || currentChatId) && (
       <footer style={{
         padding: '12px 16px',
         borderTop: '1px solid var(--bg-dark-secondary)',
@@ -3359,36 +3314,6 @@ function App() {
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
             Nueva Conversación
-          </button>
-
-          {/* Meeting Mode Button */}
-          <button
-            onClick={() => {
-              setIsMeetingMode(true);
-              setIsSidebarOpen(false);
-            }}
-            style={{
-              width: '100%',
-              padding: '12px 16px',
-              marginTop: '8px',
-              background: isMeetingMode ? 'var(--color-accent)' : 'var(--bg-dark-tertiary)',
-              border: '1px solid var(--border-modal)',
-              borderRadius: '10px',
-              color: isMeetingMode ? 'var(--color-on-accent)' : 'var(--color-white)',
-              fontSize: '14px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              transition: 'all 0.2s'
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-            Agente de Reuniones
           </button>
         </div>
 

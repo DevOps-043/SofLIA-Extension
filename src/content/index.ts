@@ -1,549 +1,10 @@
 console.log('SOFLIA Content Script loaded');
 
-import { MeetSpeakerDetector, MeetParticipant, SpeakerChangeEvent } from '../services/meet-speaker-detector';
-import { MeetCaptionScraper } from '../services/meet-caption-scraper';
-
-// ============================================
-// SPEAKER DETECTION
-// ============================================
-
-let speakerDetector: MeetSpeakerDetector | null = null;
-let currentActiveSpeaker: string | null = null;
-let meetingParticipants: MeetParticipant[] = [];
-let captionScraper: MeetCaptionScraper | null = null;
-
-// Auto-detect state — prevents duplicate starts
-let autoDetectRunning = false;
-let ccEnableRetryId: ReturnType<typeof setInterval> | null = null;
-
-// Debounce: don't click the CC button more than once every 5 s.
-// Multiple content-script instances (extension reload while tab lives) used to
-// click it every few hundred ms, toggling CC on/off rapidly.
-let _lastCCClickTime = 0;
-const _CC_DEBOUNCE_MS = 5000;
-
 // chrome.runtime.sendMessage can throw synchronously when the extension context
 // is invalidated (e.g. after extension reload while the tab stays open).
 // .catch() does not protect against that, so wrap every fire-and-forget send here.
 function safeSend(msg: object): void {
   try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch { /* context invalidated */ }
-}
-
-/**
- * Start speaker detection for Google Meet
- */
-function startSpeakerDetection(): void {
-  if (speakerDetector) {
-    console.log('SOFLIA: Speaker detector already running');
-    return;
-  }
-
-  const platform = detectMeetingPlatform();
-  if (platform !== 'google-meet') {
-    console.log('SOFLIA: Speaker detection only supported for Google Meet');
-    return;
-  }
-
-  console.log('SOFLIA: Starting speaker detection...');
-  speakerDetector = new MeetSpeakerDetector();
-
-  speakerDetector.start({
-    onSpeakerChange: (event: SpeakerChangeEvent) => {
-      currentActiveSpeaker = event.currentSpeaker;
-      console.log('SOFLIA: Speaker changed to:', currentActiveSpeaker);
-
-      // Notify popup/background about speaker change
-      safeSend({
-        type: 'SPEAKER_CHANGED',
-        speaker: event.currentSpeaker,
-        previousSpeaker: event.previousSpeaker,
-        timestamp: event.timestamp
-      });
-    },
-    onParticipantsUpdate: (participants: MeetParticipant[]) => {
-      meetingParticipants = participants;
-      console.log('SOFLIA: Participants updated:', participants.map(p => p.name));
-
-      // Notify popup/background about participants
-      safeSend({
-        type: 'PARTICIPANTS_UPDATED',
-        participants: participants
-      });
-    }
-  });
-
-  // Enable CC + hide overlay + start scraper if not already running (auto-detect may have done this)
-  enableCCCaptions();
-  hideCCCaptions();
-
-  if (!captionScraper) {
-    captionScraper = new MeetCaptionScraper();
-    captionScraper.start((entry) => {
-      console.log('SOFLIA: CC Caption received —', entry.speaker, ':', entry.text);
-      safeSend({
-        type: 'CAPTION_RECEIVED',
-        speaker: entry.speaker,
-        text: entry.text,
-        timestamp: entry.timestamp
-      });
-    });
-    console.log('SOFLIA: CC caption scraper started (manual)');
-  }
-}
-
-/**
- * Auto-enable Google Meet's CC (Closed Captions) if not already on.
- * Tries multiple selectors for the CC toggle button.
- * If already enabled, does nothing.
- */
-function enableCCCaptions(): void {
-  // ── 0. If the Meet settings dialog is open, close it and bail ──
-  // Meet opens "Configuración > Subtítulos" when you click CC while it is already on.
-  const settingsDialog = document.querySelector('[aria-modal="true"]') as HTMLElement | null;
-  if (settingsDialog) {
-    const closeBtn = settingsDialog.querySelector('button[aria-label*="cerrar" i], button[aria-label*="close" i], [data-tooltip*="cerrar" i], [data-tooltip*="close" i]') as HTMLElement | null;
-    if (closeBtn) {
-      closeBtn.click();
-      console.log('SOFLIA: Closed Meet settings dialog');
-    }
-    return; // don't try to enable CC while dialog is open
-  }
-
-  // ── 1. If the scraper already found a caption container, CC is on — skip ──
-  if (captionScraper?.isCaptionsDetected()) {
-    console.log('SOFLIA: CC already detected by scraper — skipping enable');
-    return;
-  }
-
-  // ── 2. Heuristic: check if caption text is visible anywhere on screen ──
-  // (covers the case where the scraper hasn't locked on yet but Meet already shows CC)
-  const liveRegions = document.querySelectorAll('[aria-live], [role="log"], [role="status"]');
-  for (const el of liveRegions) {
-    const t = el.textContent?.trim();
-    if (t && t.length > 10) {
-      console.log('SOFLIA: Live region with text found — assuming CC already on');
-      return;
-    }
-  }
-
-  // ── 3. Debounce guard — never click CC more often than _CC_DEBOUNCE_MS ──
-  if (Date.now() - _lastCCClickTime < _CC_DEBOUNCE_MS) {
-    console.log('SOFLIA: CC click debounce — skipping');
-    return;
-  }
-
-  // ── 4. Find and click the CC button (only if CC appears to be off) ──
-  const ccSelectors = [
-    'button[aria-label*="subtítulo" i]',
-    'button[aria-label*="subtitle" i]',
-    'button[aria-label*="caption" i]',
-    '[data-tooltip*="subtítulo" i]',
-    '[data-tooltip*="subtitle" i]',
-    '[data-tooltip*="caption" i]',
-  ];
-
-  for (const sel of ccSelectors) {
-    try {
-      const btn = document.querySelector(sel) as HTMLElement | null;
-      if (!btn) continue;
-
-      // Extra safety: if the button looks pressed/active in any way, don't click
-      const isActive = btn.getAttribute('aria-pressed') === 'true'
-        || btn.getAttribute('aria-checked') === 'true'
-        || btn.classList.contains('active')
-        || btn.getAttribute('data-state') === 'on';
-      if (isActive) {
-        console.log('SOFLIA: CC button appears active — skipping click');
-        return;
-      }
-
-      btn.click();
-      _lastCCClickTime = Date.now();
-      console.log('SOFLIA: CC captions auto-enabled via selector:', sel);
-      return;
-    } catch { /* skip invalid selector */ }
-  }
-
-  // Fallback: search all buttons for one containing "CC" text
-  const allButtons = document.querySelectorAll('button');
-  for (const btn of allButtons) {
-    const text = btn.textContent?.trim();
-    const ariaLabel = btn.getAttribute('aria-label') || '';
-    if (text === 'CC' || ariaLabel.toLowerCase().includes('caption') || ariaLabel.toLowerCase().includes('subtítulo')) {
-      btn.click();
-      _lastCCClickTime = Date.now();
-      console.log('SOFLIA: CC captions auto-enabled via text/aria fallback');
-      return;
-    }
-  }
-
-  console.log('SOFLIA: Could not find CC button — user may need to enable captions manually');
-}
-
-/**
- * Hide Meet's CC caption overlay visually — "hidden captions" (same as Tactiq 2021+).
- * DOM elements still exist & get updated; MutationObserver keeps working.
- * Safe to call multiple times.
- */
-function hideCCCaptions(): void {
-  if (!captionScraper) return;
-  const root = captionScraper.getCaptionRoot() as HTMLElement | null;
-  if (!root) return; // container not found yet — retry will call us again
-
-  if (root.style.clipPath === 'inset(100%)') return; // already hidden
-
-  // Safety guard: the Meet call-control toolbar is also in the lower viewport.
-  // If this element contains >2 buttons it is the toolbar — exclude and retry.
-  const buttons = root.querySelectorAll('button');
-  if (buttons.length > 2) {
-    console.log('SOFLIA: Safety — caption root has', buttons.length, 'buttons; wrong element, resetting');
-    captionScraper.resetContainer();
-    return;
-  }
-
-  // Hide the caption text container itself
-  hideEl(root);
-
-  // The CC overlay in Meet has a parent wrapper that also contains the
-  // language / controls bar ("Español (México)" + font-size + gear).
-  // Walk up 1-3 levels and hide any small ancestor still in the lower viewport
-  // — but ONLY if it does NOT contain the main call-control buttons (>2 buttons).
-  let parent = root.parentElement;
-  for (let i = 0; i < 3 && parent; i++, parent = parent.parentElement) {
-    const rect = parent.getBoundingClientRect();
-    // Stop if we've left the lower-third or the element is too large
-    if (rect.top < window.innerHeight * 0.45) break;
-    if (rect.height > window.innerHeight * 0.4) break;
-    // Never touch the call toolbar
-    if (parent.querySelectorAll('button').length > 3) break;
-    hideEl(parent);
-    console.log('SOFLIA: Also hid CC parent wrapper (depth', i + 1, ')');
-  }
-
-  // Second approach: directly find and hide the CC controls bar that shows
-  // the language selector — it has a <span> with "Español" or "English" etc.
-  // and sits in the lower viewport. This catches it even if it's not a parent.
-  const langSelectors = [
-    'span[data-lang-code]',                        // some Meet versions
-    '[data-tooltip*="idioma" i]',
-    '[data-tooltip*="language" i]',
-  ];
-  for (const sel of langSelectors) {
-    try {
-      const el = document.querySelector(sel) as HTMLElement | null;
-      if (el) {
-        // Walk up to find the controls bar (small, lower viewport)
-        let bar: HTMLElement | null = el;
-        for (let i = 0; i < 5 && bar; i++) {
-          const r = bar.getBoundingClientRect();
-          if (r.top > window.innerHeight * 0.45 && r.height < window.innerHeight * 0.15
-              && bar.querySelectorAll('button').length <= 3) {
-            hideEl(bar);
-            console.log('SOFLIA: Hid CC controls bar via lang selector');
-            break;
-          }
-          bar = bar.parentElement;
-        }
-      }
-    } catch { /* skip */ }
-  }
-
-  console.log('SOFLIA: CC caption overlay hidden');
-}
-
-/**
- * Hide an element visually WITHOUT triggering Meet's "CC was turned off" detector.
- * Meet watches for opacity → 0 and visibility:hidden on the caption container.
- * clip-path collapses the visible area to zero; height/overflow collapse the space.
- * The element stays in the DOM with display/visibility intact → MutationObserver keeps firing.
- */
-function hideEl(el: HTMLElement): void {
-  el.style.setProperty('clip-path', 'inset(100%)', 'important');
-  el.style.setProperty('pointer-events', 'none', 'important');
-  // Collapse the space the CC bar/caption area occupied
-  el.style.setProperty('height', '0px', 'important');
-  el.style.setProperty('min-height', '0px', 'important');
-  el.style.setProperty('max-height', '0px', 'important');
-  el.style.setProperty('overflow', 'hidden', 'important');
-  el.style.setProperty('padding', '0px', 'important');
-  el.style.setProperty('margin', '0px', 'important');
-  el.style.setProperty('border', '0px', 'important');
-  el.style.setProperty('transition', 'none', 'important');
-}
-
-/**
- * Auto-detect Google Meet meetings and start silent CC caption scraping
- * (replicates Tactiq's background behavior).
- * Idempotent — safe to call repeatedly.
- */
-function autoDetectAndStartCaptions(): void {
-  // Already running → nothing to do
-  if (captionScraper) return;
-
-  const platform = detectMeetingPlatform();
-  if (platform !== 'google-meet') return;
-
-  const meetingInfo = getMeetingInfo();
-  if (!meetingInfo.isActive) return;
-
-  if (autoDetectRunning) return; // guard against concurrent invocations
-  autoDetectRunning = true;
-
-  console.log('SOFLIA: [AUTO] Meeting detected — starting silent transcription');
-
-  // Notify background (it will buffer captions + relay to popup)
-  safeSend({
-    type: 'MEETING_AUTO_DETECTED',
-    platform,
-    title: meetingInfo.title,
-    url: window.location.href
-  });
-
-  // Start caption scraper
-  captionScraper = new MeetCaptionScraper();
-  captionScraper.start((entry) => {
-    safeSend({
-      type: 'CAPTION_RECEIVED',
-      speaker: entry.speaker,
-      text: entry.text,
-      timestamp: entry.timestamp
-    });
-  });
-  console.log('SOFLIA: [AUTO] Caption scraper started');
-
-  // Enable CC with retry (Meet controls may not be rendered yet)
-  enableCCCaptions();
-  hideCCCaptions();
-
-  ccEnableRetryId = setInterval(() => {
-    enableCCCaptions();
-    hideCCCaptions();
-    // Stop retrying once the container is found AND hidden
-    const root = captionScraper?.getCaptionRoot() as HTMLElement | null;
-    if (root && root.style.opacity === '0') {
-      if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
-    }
-  }, 2000);
-
-  // Safety: stop retry after 60 s
-  setTimeout(() => {
-    if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
-  }, 60000);
-}
-
-/**
- * Called when URL changes away from a meeting — notifies background.
- */
-function onNavigationAway(): void {
-  if (!captionScraper) return; // wasn't scraping → nothing to notify
-  const platform = detectMeetingPlatform();
-  if (platform === 'google-meet') return; // still in a meeting
-
-  console.log('SOFLIA: [AUTO] Navigated away from meeting');
-  safeSend({ type: 'MEETING_ENDED' });
-
-  // Stop scraper + cleanup
-  if (captionScraper) { captionScraper.stop(); captionScraper = null; }
-  if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
-  autoDetectRunning = false;
-}
-
-/**
- * Stop speaker detection
- */
-function stopSpeakerDetection(): void {
-  if (speakerDetector) {
-    speakerDetector.stop();
-    speakerDetector = null;
-    currentActiveSpeaker = null;
-    meetingParticipants = [];
-    console.log('SOFLIA: Speaker detection stopped');
-  }
-  if (captionScraper) {
-    captionScraper.stop();
-    captionScraper = null;
-    console.log('SOFLIA: CC caption scraper stopped');
-  }
-}
-
-/**
- * Get current active speaker
- */
-function getActiveSpeaker(): string | null {
-  return speakerDetector?.getCurrentSpeaker() || currentActiveSpeaker;
-}
-
-/**
- * Get list of meeting participants
- */
-function getMeetingParticipants(): MeetParticipant[] {
-  return speakerDetector?.getParticipants() || meetingParticipants;
-}
-
-// ============================================
-// MEETING DETECTION FUNCTIONS
-// ============================================
-
-type MeetingPlatform = 'google-meet' | 'zoom' | null;
-
-interface MeetingInfo {
-  platform: MeetingPlatform;
-  title?: string;
-  meetingUrl?: string;
-  participantCount?: number;
-  isActive: boolean;
-}
-
-/**
- * Detect if current page is a meeting platform
- */
-function detectMeetingPlatform(): MeetingPlatform {
-  const url = window.location.href;
-
-  // Google Meet detection
-  if (url.includes('meet.google.com') && !url.includes('/landing')) {
-    return 'google-meet';
-  }
-
-  // Zoom Web Client detection
-  if (url.includes('zoom.us/wc') || url.includes('zoom.us/j') || url.includes('zoom.us/s')) {
-    return 'zoom';
-  }
-
-  return null;
-}
-
-/**
- * Get meeting information from the current page
- */
-function getMeetingInfo(): MeetingInfo {
-  const platform = detectMeetingPlatform();
-
-  if (!platform) {
-    return { platform: null, isActive: false };
-  }
-
-  const info: MeetingInfo = {
-    platform,
-    meetingUrl: window.location.href,
-    isActive: true
-  };
-
-  if (platform === 'google-meet') {
-    // Try to get meeting title
-    const titleSelectors = [
-      '[data-meeting-title]',
-      '[data-call-id] h1',
-      'c-wiz[data-call-id] div[jscontroller] span'
-    ];
-
-    for (const selector of titleSelectors) {
-      const el = document.querySelector(selector);
-      if (el?.textContent) {
-        info.title = el.textContent.trim();
-        break;
-      }
-    }
-
-    // If no title found, use meeting code from URL
-    if (!info.title) {
-      const meetCode = window.location.pathname.split('/').pop();
-      if (meetCode && meetCode.length > 0) {
-        info.title = `Meet: ${meetCode}`;
-      }
-    }
-
-    // Try to count participants
-    const participantElements = document.querySelectorAll('[data-participant-id]');
-    if (participantElements.length > 0) {
-      info.participantCount = participantElements.length;
-    }
-
-    // Check if meeting is active (has video elements or call controls)
-    // Use multiple detection strategies for robustness
-    const isActiveSelectors = [
-      'video',
-      '[data-self-name]',
-      '[aria-label*="Leave"]',
-      '[aria-label*="Salir"]',
-      '[aria-label*="call"]',
-      '[aria-label*="llamada"]',
-      '[aria-label*="Colgar"]',
-      '[aria-label*="Hang up"]',
-      '[data-call-id]',
-      '[data-meeting-code]',
-      '[jscontroller][jsaction*="call"]',
-      'button[aria-label*="microphone"]',
-      'button[aria-label*="micrófono"]',
-      'button[aria-label*="camera"]',
-      'button[aria-label*="cámara"]',
-      '[data-is-muted]',
-      '[data-tooltip*="micrófono"]',
-      '[data-tooltip*="microphone"]'
-    ];
-
-    // Check for active meeting indicators
-    const hasActiveIndicator = isActiveSelectors.some(sel => {
-      try {
-        return document.querySelector(sel) !== null;
-      } catch {
-        return false;
-      }
-    });
-
-    // Also check if URL has meeting code pattern (xxx-xxxx-xxx)
-    const meetingCodePattern = /\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i;
-    const hasMeetingCode = meetingCodePattern.test(window.location.pathname);
-
-    // Consider active if we have indicators OR if we have a valid meeting code in URL
-    info.isActive = hasActiveIndicator || hasMeetingCode;
-
-    console.log('SOFLIA: Meeting detection - hasActiveIndicator:', hasActiveIndicator, 'hasMeetingCode:', hasMeetingCode, 'isActive:', info.isActive);
-  }
-
-  if (platform === 'zoom') {
-    // Try to get meeting title from Zoom
-    const zoomTitleSelectors = [
-      '.meeting-topic',
-      '[class*="meeting-title"]',
-      '.zm-header__title'
-    ];
-
-    for (const selector of zoomTitleSelectors) {
-      const el = document.querySelector(selector);
-      if (el?.textContent) {
-        info.title = el.textContent.trim();
-        break;
-      }
-    }
-
-    // Count participants in Zoom
-    const zoomParticipants = document.querySelectorAll('[class*="participant-item"]');
-    if (zoomParticipants.length > 0) {
-      info.participantCount = zoomParticipants.length;
-    }
-
-    // Check if Zoom meeting is active
-    const zoomActiveSelectors = [
-      'video',
-      '[class*="leave-btn"]',
-      '.meeting-client'
-    ];
-
-    info.isActive = zoomActiveSelectors.some(sel =>
-      document.querySelector(sel) !== null
-    );
-  }
-
-  return info;
-}
-
-/**
- * Check if the page has a meeting that can be captured
- */
-function canCaptureMeeting(): boolean {
-  const info = getMeetingInfo();
-  return info.platform !== null && info.isActive;
 }
 
 // ============================================
@@ -553,8 +14,8 @@ function canCaptureMeeting(): boolean {
 function generateElementId(element: Element, index: number): string {
   const tag = element.tagName.toLowerCase();
   const id = element.id ? `#${element.id}` : '';
-  const classes = element.className && typeof element.className === 'string' 
-    ? `.${element.className.split(' ').filter(c => c).join('.')}` 
+  const classes = element.className && typeof element.className === 'string'
+    ? `.${element.className.split(' ').filter(c => c).join('.')}`
     : '';
   return `[${index}]${tag}${id}${classes}`.substring(0, 100);
 }
@@ -1058,7 +519,9 @@ function getMainContentArea(): string {
 
 function getStructuredDOM(): object {
   const interactiveElements: any[] = [];
+  let elementIndex = 0; // Índice real que usaremos
 
+  // Selectores más específicos - excluimos [tabindex] genérico
   const selectors = [
     'a[href]',
     'button',
@@ -1072,23 +535,56 @@ function getStructuredDOM(): object {
     '[role="link"]',
     '[role="tab"]',
     '[role="menuitem"]',
+    '[role="option"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]',
     '[onclick]',
-    '[tabindex]'
+    // Solo tabindex en elementos que tienen texto o aria-label
+    'div[tabindex]:not(:empty)',
+    'span[tabindex]:not(:empty)'
   ];
 
   const elements = document.querySelectorAll(selectors.join(','));
+  const seen = new Set<Element>(); // Evitar duplicados
 
-  elements.forEach((el, index) => {
+  elements.forEach((el) => {
+    // Evitar duplicados
+    if (seen.has(el)) return;
+    seen.add(el);
+
     const rect = el.getBoundingClientRect();
 
+    // Filtrar elementos invisibles
     if (rect.width === 0 && rect.height === 0) return;
+    if (rect.width < 5 || rect.height < 5) return; // Muy pequeños
     if (window.getComputedStyle(el).display === 'none') return;
     if (window.getComputedStyle(el).visibility === 'hidden') return;
+    if (window.getComputedStyle(el).opacity === '0') return;
+
+    // Obtener texto y aria-label
+    const text = getVisibleText(el);
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const title = el.getAttribute('title') || '';
+    const dataTooltip = el.getAttribute('data-tooltip') || '';
+    
+    // FILTRO CRÍTICO: Solo incluir elementos con contenido útil
+    // Excepciones: inputs, textareas, selects (campos de formulario)
+    const isFormField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
+    const isLink = el.tagName === 'A';
+    const isButton = el.tagName === 'BUTTON' || el.getAttribute('role') === 'button';
+    
+    // Si es un div/span con tabindex pero sin texto/aria-label, SALTAR
+    if (!isFormField && !isLink && !isButton) {
+      const hasContent = text.length > 0 || ariaLabel.length > 0 || title.length > 0 || dataTooltip.length > 0;
+      if (!hasContent) return;
+    }
 
     const elementInfo: any = {
-      id: generateElementId(el, index),
+      index: elementIndex, // Usar nuestro índice controlado
+      id: generateElementId(el, elementIndex),
       tag: el.tagName.toLowerCase(),
-      text: getVisibleText(el),
+      text: text,
       attributes: {}
     };
 
@@ -1111,8 +607,14 @@ function getStructuredDOM(): object {
     if (el.getAttribute('role') === 'textbox') {
       elementInfo.type = 'textbox';
     }
-    if (el.hasAttribute('aria-label')) {
-      elementInfo.ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) {
+      elementInfo.ariaLabel = ariaLabel;
+    }
+    if (title) {
+      elementInfo.title = title;
+    }
+    if (dataTooltip) {
+      elementInfo.tooltip = dataTooltip;
     }
     if (el.hasAttribute('aria-placeholder')) {
       elementInfo.attributes.placeholder = el.getAttribute('aria-placeholder');
@@ -1125,7 +627,10 @@ function getStructuredDOM(): object {
     };
 
     interactiveElements.push(elementInfo);
+    elementIndex++; // Solo incrementar para elementos que realmente agregamos
   });
+
+  console.log(`SOFLIA: Mapeados ${interactiveElements.length} elementos interactivos`);
 
   return {
     url: window.location.href,
@@ -1327,14 +832,14 @@ let currentSelection = '';
 
 function handleButtonClick(action: string) {
   console.log('Button clicked:', action, 'Current selection:', currentSelection);
-  
+
   if (!currentSelection) {
     console.log('No selection to process');
     return;
   }
-  
+
   let prompt = '';
-  
+
   switch (action) {
     case 'ask':
       prompt = `Tengo una pregunta sobre este texto: "${currentSelection}"`;
@@ -1351,9 +856,9 @@ function handleButtonClick(action: string) {
     default:
       prompt = currentSelection;
   }
-  
+
   console.log('Sending to Lia:', prompt.substring(0, 100) + '...');
-  
+
   // Send to extension background
   safeSend({
     type: 'SELECTION_ACTION',
@@ -1361,22 +866,22 @@ function handleButtonClick(action: string) {
     text: currentSelection,
     prompt: prompt
   });
-  
+
   hideSelectionPopup();
   currentSelection = '';
 }
 
 function createSelectionPopup() {
   if (selectionPopup) return;
-  
+
   // Create host element
   const host = document.createElement('div');
   host.id = 'lia-selection-popup-host';
   host.style.cssText = 'position: fixed; z-index: 2147483647; display: none;';
-  
+
   // Create shadow root for isolation
   const shadow = host.attachShadow({ mode: 'closed' });
-  
+
   // Add styles inside shadow DOM
   const style = document.createElement('style');
   style.textContent = `
@@ -1384,7 +889,7 @@ function createSelectionPopup() {
       all: initial;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    
+
     .lia-popup {
       background: #1E2329;
       border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1393,17 +898,17 @@ function createSelectionPopup() {
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
       animation: liaFadeIn 0.15s ease-out;
     }
-    
+
     @keyframes liaFadeIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    
+
     .lia-popup-content {
       display: flex;
       gap: 4px;
     }
-    
+
     .lia-popup-btn {
       display: flex;
       align-items: center;
@@ -1419,12 +924,12 @@ function createSelectionPopup() {
       white-space: nowrap;
       font-family: inherit;
     }
-    
+
     .lia-popup-btn:hover {
       background: #00d4b3;
       color: #0a2540;
     }
-    
+
     .lia-popup-btn svg {
       flex-shrink: 0;
       width: 16px;
@@ -1432,14 +937,14 @@ function createSelectionPopup() {
     }
   `;
   shadow.appendChild(style);
-  
+
   // Create popup container inside shadow
   const popup = document.createElement('div');
   popup.className = 'lia-popup';
-  
+
   const content = document.createElement('div');
   content.className = 'lia-popup-content';
-  
+
   // Button definitions
   const buttons = [
     { action: 'ask', label: 'Preguntar a Lia', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>' },
@@ -1447,12 +952,12 @@ function createSelectionPopup() {
     { action: 'summarize', label: 'Resumir', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="3" y2="18"></line></svg>' },
     { action: 'translate', label: 'Traducir', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>' }
   ];
-  
+
   buttons.forEach(({ action, label, icon }) => {
     const btn = document.createElement('button');
     btn.className = 'lia-popup-btn';
     btn.innerHTML = icon + ' ' + label;
-    
+
     // Use onclick property for maximum compatibility
     btn.onclick = function(e) {
       console.log('LIA SHADOW BUTTON CLICKED:', action);
@@ -1461,13 +966,13 @@ function createSelectionPopup() {
       handleButtonClick(action);
       return false;
     };
-    
+
     content.appendChild(btn);
   });
-  
+
   popup.appendChild(content);
   shadow.appendChild(popup);
-  
+
   document.body.appendChild(host);
   selectionPopup = host;
   console.log('Lia selection popup created with Shadow DOM');
@@ -1476,27 +981,27 @@ function createSelectionPopup() {
 function showSelectionPopup(x: number, y: number) {
   if (!selectionPopup) createSelectionPopup();
   if (!selectionPopup) return;
-  
+
   const popupWidth = 420;
   const popupHeight = 50;
-  
+
   // Center horizontally relative to selection
   let left = x - popupWidth / 2;
-  
+
   // Position above the selection (y is already viewport-relative from getBoundingClientRect)
   let top = y - popupHeight - 10;
-  
+
   // Keep within horizontal viewport bounds
   if (left < 10) left = 10;
   if (left + popupWidth > window.innerWidth - 10) {
     left = window.innerWidth - popupWidth - 10;
   }
-  
+
   // If popup would go above viewport, put it below the selection instead
   if (top < 10) {
     top = y + 25;
   }
-  
+
   selectionPopup.style.left = `${left}px`;
   selectionPopup.style.top = `${top}px`;
   selectionPopup.style.display = 'block';
@@ -1515,16 +1020,16 @@ document.addEventListener('mouseup', (e) => {
   if (selectionPopup && selectionPopup.contains(e.target as Node)) {
     return;
   }
-  
+
   // Small delay to let selection complete
   setTimeout(() => {
     const selection = window.getSelection();
     const selectedText = selection?.toString().trim();
-    
+
     if (selectedText && selectedText.length > 3 && selectedText.length < 5000) {
       currentSelection = selectedText;
       console.log('Lia: Text selected, length:', selectedText.length);
-      
+
       try {
         // Send selection immediately to background/popup
         safeSend({ type: 'TEXT_SELECTED', text: currentSelection });
@@ -1636,71 +1141,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       );
       break;
 
-    // ============================================
-    // MEETING DETECTION HANDLERS
-    // ============================================
-
-    case 'detectMeeting':
-      // Detect if current page is a meeting
-      console.log('Lia: Detectando reunión...');
-      const platform = detectMeetingPlatform();
-      sendResponse({
-        platform,
-        isMeeting: platform !== null
-      });
-      break;
-
-    case 'getMeetingInfo':
-      // Get detailed meeting information
-      console.log('Lia: Obteniendo información de reunión...');
-      const meetingInfo = getMeetingInfo();
-      sendResponse(meetingInfo);
-      break;
-
-    case 'canCaptureMeeting':
-      // Check if meeting can be captured
-      console.log('Lia: Verificando si se puede capturar reunión...');
-      sendResponse({
-        canCapture: canCaptureMeeting(),
-        meetingInfo: getMeetingInfo()
-      });
-      break;
-
-    // ============================================
-    // SPEAKER DETECTION HANDLERS
-    // ============================================
-
-    case 'startSpeakerDetection':
-      // Start detecting active speaker in Google Meet
-      console.log('Lia: Iniciando detección de hablantes...');
-      startSpeakerDetection();
-      sendResponse({ success: true });
-      break;
-
-    case 'stopSpeakerDetection':
-      // Stop speaker detection
-      console.log('Lia: Deteniendo detección de hablantes...');
-      stopSpeakerDetection();
-      sendResponse({ success: true });
-      break;
-
-    case 'getActiveSpeaker':
-      // Get current active speaker
-      console.log('Lia: Obteniendo hablante activo...');
-      sendResponse({
-        speaker: getActiveSpeaker(),
-        participants: getMeetingParticipants()
-      });
-      break;
-
-    case 'getParticipants':
-      // Get list of meeting participants
-      console.log('Lia: Obteniendo lista de participantes...');
-      sendResponse({
-        participants: getMeetingParticipants()
-      });
-      break;
-
     default:
       console.log('Acción no reconocida:', request.action);
       sendResponse({ error: 'Acción no reconocida' });
@@ -1708,54 +1148,3 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
   return true;
 });
-
-// ============================================
-// AUTO-DETECT MEETINGS (Tactiq-style silent start)
-// Runs in the background from the moment the
-// content script loads — no user click needed.
-// ============================================
-
-// Singleton guard: when the extension is reloaded while a Meet tab stays open
-// Chrome injects a NEW content script without fully killing the old one.
-// Both instances share `window`, so we use a flag to let only ONE run the
-// auto-detect + CC-click logic.  The message listener above works on every
-// instance (Chrome routes messages to all), but that is harmless.
-if (!(window as any).__SOFLIA_CC_OWNER__) {
-  (window as any).__SOFLIA_CC_OWNER__ = true;
-
-  // 1. Try immediately + on DOMContentLoaded/load
-  autoDetectAndStartCaptions();
-  if (document.readyState !== 'complete') {
-    window.addEventListener('load', () => setTimeout(autoDetectAndStartCaptions, 1500));
-  }
-
-  // 2. Retry every 3 s for 90 s — covers slow Meet renders and delayed joins
-  let _autoRetries = 0;
-  const _autoRetryInterval = setInterval(() => {
-    _autoRetries++;
-    if (_autoRetries > 30 || captionScraper) {
-      clearInterval(_autoRetryInterval);
-      return;
-    }
-    autoDetectAndStartCaptions();
-  }, 3000);
-  // 3. Watch for SPA navigations inside Meet (pushState / popstate)
-  //    Meet is a single-page app — URL changes without full reloads.
-  //    Only the owner instance patches pushState; avoids stacking callbacks.
-  const _origPush = history.pushState;
-  history.pushState = function (data: any, title: string, url?: string | URL | null) {
-    _origPush.call(this, data, title, url);
-    setTimeout(() => {
-      autoDetectAndStartCaptions();
-      onNavigationAway();
-    }, 1000);
-  };
-  window.addEventListener('popstate', () => {
-    setTimeout(() => {
-      autoDetectAndStartCaptions();
-      onNavigationAway();
-    }, 1000);
-  });
-} else {
-  console.log('SOFLIA: Duplicate content script — auto-detect skipped (another instance owns CC)');
-}
