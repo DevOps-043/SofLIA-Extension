@@ -73,11 +73,11 @@ body {
   color: var(--color-white);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  min-width: 320px; /* More flexible minimum for small screens */
   min-height: 500px;
   width: 100%;
   height: 100vh;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 #root {
@@ -535,10 +535,6 @@ textarea {
 
 /* Width-based responsive */
 @media screen and (max-width: 380px) {
-  body {
-    min-width: 300px;
-  }
-
   .markdown-content {
     font-size: 13px;
   }

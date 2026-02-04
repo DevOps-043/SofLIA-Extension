@@ -14,13 +14,35 @@ interface MeetingCaptureInfo {
 }
 let activeMeetingCapture: MeetingCaptureInfo | null = null;
 
+// ============================================
+// AUTO-MEETING STATE (like Tactiq background)
+// Buffers captions while popup is closed so
+// they can be shown the moment popup opens.
+// ============================================
+interface AutoCaption {
+  speaker: string;
+  text: string;
+  timestamp: number;
+}
+
+interface AutoMeetingState {
+  tabId: number;
+  platform: string;
+  title: string;
+  url: string;
+  isActive: boolean;
+  captions: AutoCaption[];
+}
+
+let autoMeetingState: AutoMeetingState | null = null;
+
+// Open side panel on icon click (runs every time the service worker starts)
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error('setPanelBehavior:', error));
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('SOFLIA Agent installed');
-  
-  // Disable side panel on click to allow popup to open (Modal mode)
-  // chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
-  //   .catch((error) => console.error(error));
-    
+
   // Inject content script into all existing tabs
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach((tab) => {
@@ -81,6 +103,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // Clean up when tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
+  // Clear auto-meeting state if the meeting tab was closed
+  if (autoMeetingState && autoMeetingState.tabId === tabId) {
+    console.log('Background: Meeting tab closed, clearing auto-meeting state');
+    autoMeetingState = null;
+  }
 });
 
 // Handle messages from content script
@@ -265,6 +292,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ hasPermission });
       }
     );
+    return true;
+  }
+
+  // ============================================
+  // AUTO-MEETING HANDLERS (Tactiq-style background)
+  // ============================================
+
+  if (message.type === 'MEETING_AUTO_DETECTED') {
+    const tabId = sender.tab?.id;
+    if (tabId) {
+      console.log('Background: Meeting auto-detected in tab', tabId, message.title);
+      autoMeetingState = {
+        tabId,
+        platform: message.platform || 'google-meet',
+        title: message.title || '',
+        url: message.url || '',
+        isActive: true,
+        captions: autoMeetingState?.tabId === tabId ? autoMeetingState.captions : []
+      };
+      // Relay to popup if open (popup listens for this to auto-enter meeting mode)
+      chrome.runtime.sendMessage({ type: 'AUTO_MEETING_DETECTED', state: autoMeetingState }).catch(() => {});
+    }
+    sendResponse({ received: true });
+    return true;
+  }
+
+  if (message.type === 'CAPTION_RECEIVED') {
+    // Buffer caption so popup can load them on open
+    if (autoMeetingState && sender.tab?.id === autoMeetingState.tabId) {
+      autoMeetingState.captions.push({
+        speaker: message.speaker || 'Participante',
+        text: message.text || '',
+        timestamp: message.timestamp || Date.now()
+      });
+      // Keep last 500 captions (sufficient for a long meeting)
+      if (autoMeetingState.captions.length > 500) {
+        autoMeetingState.captions.shift();
+      }
+    }
+    // Relay to popup (MeetingPanel's direct listener will catch it if open)
+    chrome.runtime.sendMessage({ type: 'CAPTION_RECEIVED', speaker: message.speaker, text: message.text, timestamp: message.timestamp }).catch(() => {});
+    sendResponse({ received: true });
+    return true;
+  }
+
+  if (message.type === 'MEETING_ENDED') {
+    // Content script detected navigation away from meeting
+    if (autoMeetingState && sender.tab?.id === autoMeetingState.tabId) {
+      console.log('Background: Meeting ended (navigation away)');
+      autoMeetingState.isActive = false;
+    }
+    sendResponse({ received: true });
+    return true;
+  }
+
+  if (message.type === 'GET_AUTO_MEETING_STATE') {
+    // Popup asks on mount: "is there an active meeting with captions?"
+    sendResponse(autoMeetingState);
     return true;
   }
 

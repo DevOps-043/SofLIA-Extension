@@ -12,6 +12,10 @@ let currentActiveSpeaker: string | null = null;
 let meetingParticipants: MeetParticipant[] = [];
 let captionScraper: MeetCaptionScraper | null = null;
 
+// Auto-detect state — prevents duplicate starts
+let autoDetectRunning = false;
+let ccEnableRetryId: ReturnType<typeof setInterval> | null = null;
+
 /**
  * Start speaker detection for Google Meet
  */
@@ -59,8 +63,9 @@ function startSpeakerDetection(): void {
     }
   });
 
-  // Auto-enable CC captions in Meet, then start the scraper
+  // Enable CC + hide overlay + start scraper if not already running (auto-detect may have done this)
   enableCCCaptions();
+  hideCCCaptions();
 
   if (!captionScraper) {
     captionScraper = new MeetCaptionScraper();
@@ -73,7 +78,7 @@ function startSpeakerDetection(): void {
         timestamp: entry.timestamp
       }).catch(() => {});
     });
-    console.log('SOFLIA: CC caption scraper started');
+    console.log('SOFLIA: CC caption scraper started (manual)');
   }
 }
 
@@ -83,38 +88,63 @@ function startSpeakerDetection(): void {
  * If already enabled, does nothing.
  */
 function enableCCCaptions(): void {
-  // Selectors for the CC button in Google Meet
+  // ── 0. If the Meet settings dialog is open, close it and bail ──
+  // Meet opens "Configuración > Subtítulos" when you click CC while it is already on.
+  const settingsDialog = document.querySelector('[aria-modal="true"]') as HTMLElement | null;
+  if (settingsDialog) {
+    const closeBtn = settingsDialog.querySelector('button[aria-label*="cerrar" i], button[aria-label*="close" i], [data-tooltip*="cerrar" i], [data-tooltip*="close" i]') as HTMLElement | null;
+    if (closeBtn) {
+      closeBtn.click();
+      console.log('SOFLIA: Closed Meet settings dialog');
+    }
+    return; // don't try to enable CC while dialog is open
+  }
+
+  // ── 1. If the scraper already found a caption container, CC is on — skip ──
+  if (captionScraper?.isCaptionsDetected()) {
+    console.log('SOFLIA: CC already detected by scraper — skipping enable');
+    return;
+  }
+
+  // ── 2. Heuristic: check if caption text is visible anywhere on screen ──
+  // (covers the case where the scraper hasn't locked on yet but Meet already shows CC)
+  const liveRegions = document.querySelectorAll('[aria-live], [role="log"], [role="status"]');
+  for (const el of liveRegions) {
+    const t = el.textContent?.trim();
+    if (t && t.length > 10) {
+      console.log('SOFLIA: Live region with text found — assuming CC already on');
+      return;
+    }
+  }
+
+  // ── 3. Find and click the CC button (only if CC appears to be off) ──
   const ccSelectors = [
-    'button[aria-label*="caption" i]',
-    'button[aria-label*="Caption" i]',
-    'button[aria-label*="subtitle" i]',
     'button[aria-label*="subtítulo" i]',
-    'button[aria-label*="Subtítulo" i]',
-    '[data-tooltip*="caption" i]',
-    '[data-tooltip*="Caption" i]',
+    'button[aria-label*="subtitle" i]',
+    'button[aria-label*="caption" i]',
     '[data-tooltip*="subtítulo" i]',
-    '[data-tooltip*="Subtítulo" i]',
+    '[data-tooltip*="subtitle" i]',
+    '[data-tooltip*="caption" i]',
   ];
 
   for (const sel of ccSelectors) {
     try {
       const btn = document.querySelector(sel) as HTMLElement | null;
-      if (btn) {
-        // Check if CC is already enabled by looking for aria-pressed or active state
-        const isActive = btn.getAttribute('aria-pressed') === 'true'
-          || btn.classList.contains('active')
-          || btn.getAttribute('data-state') === 'on';
+      if (!btn) continue;
 
-        if (isActive) {
-          console.log('SOFLIA: CC captions already enabled');
-          return;
-        }
-
-        // Click to enable
-        btn.click();
-        console.log('SOFLIA: CC captions auto-enabled via selector:', sel);
+      // Extra safety: if the button looks pressed/active in any way, don't click
+      const isActive = btn.getAttribute('aria-pressed') === 'true'
+        || btn.getAttribute('aria-checked') === 'true'
+        || btn.classList.contains('active')
+        || btn.getAttribute('data-state') === 'on';
+      if (isActive) {
+        console.log('SOFLIA: CC button appears active — skipping click');
         return;
       }
+
+      btn.click();
+      console.log('SOFLIA: CC captions auto-enabled via selector:', sel);
+      return;
     } catch { /* skip invalid selector */ }
   }
 
@@ -131,6 +161,100 @@ function enableCCCaptions(): void {
   }
 
   console.log('SOFLIA: Could not find CC button — user may need to enable captions manually');
+}
+
+/**
+ * Hide Meet's CC caption overlay visually — "hidden captions" (same as Tactiq 2021+).
+ * DOM elements still exist & get updated; MutationObserver keeps working.
+ * Safe to call multiple times.
+ */
+function hideCCCaptions(): void {
+  if (!captionScraper) return;
+  const root = captionScraper.getCaptionRoot() as HTMLElement | null;
+  if (!root) return; // container not found yet — retry will call us again
+
+  if (root.style.opacity === '0') return; // already hidden
+
+  root.style.setProperty('opacity', '0', 'important');
+  root.style.setProperty('pointer-events', 'none', 'important');
+  console.log('SOFLIA: CC caption container hidden');
+}
+
+/**
+ * Auto-detect Google Meet meetings and start silent CC caption scraping
+ * (replicates Tactiq's background behavior).
+ * Idempotent — safe to call repeatedly.
+ */
+function autoDetectAndStartCaptions(): void {
+  // Already running → nothing to do
+  if (captionScraper) return;
+
+  const platform = detectMeetingPlatform();
+  if (platform !== 'google-meet') return;
+
+  const meetingInfo = getMeetingInfo();
+  if (!meetingInfo.isActive) return;
+
+  if (autoDetectRunning) return; // guard against concurrent invocations
+  autoDetectRunning = true;
+
+  console.log('SOFLIA: [AUTO] Meeting detected — starting silent transcription');
+
+  // Notify background (it will buffer captions + relay to popup)
+  chrome.runtime.sendMessage({
+    type: 'MEETING_AUTO_DETECTED',
+    platform,
+    title: meetingInfo.title,
+    url: window.location.href
+  }).catch(() => {});
+
+  // Start caption scraper
+  captionScraper = new MeetCaptionScraper();
+  captionScraper.start((entry) => {
+    chrome.runtime.sendMessage({
+      type: 'CAPTION_RECEIVED',
+      speaker: entry.speaker,
+      text: entry.text,
+      timestamp: entry.timestamp
+    }).catch(() => {});
+  });
+  console.log('SOFLIA: [AUTO] Caption scraper started');
+
+  // Enable CC with retry (Meet controls may not be rendered yet)
+  enableCCCaptions();
+  hideCCCaptions();
+
+  ccEnableRetryId = setInterval(() => {
+    enableCCCaptions();
+    hideCCCaptions();
+    // Stop retrying once the container is found AND hidden
+    const root = captionScraper?.getCaptionRoot() as HTMLElement | null;
+    if (root && root.style.opacity === '0') {
+      if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
+    }
+  }, 2000);
+
+  // Safety: stop retry after 60 s
+  setTimeout(() => {
+    if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
+  }, 60000);
+}
+
+/**
+ * Called when URL changes away from a meeting — notifies background.
+ */
+function onNavigationAway(): void {
+  if (!captionScraper) return; // wasn't scraping → nothing to notify
+  const platform = detectMeetingPlatform();
+  if (platform === 'google-meet') return; // still in a meeting
+
+  console.log('SOFLIA: [AUTO] Navigated away from meeting');
+  chrome.runtime.sendMessage({ type: 'MEETING_ENDED' }).catch(() => {});
+
+  // Stop scraper + cleanup
+  if (captionScraper) { captionScraper.stop(); captionScraper = null; }
+  if (ccEnableRetryId) { clearInterval(ccEnableRetryId); ccEnableRetryId = null; }
+  autoDetectRunning = false;
 }
 
 /**
@@ -1503,4 +1627,45 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   }
 
   return true;
+});
+
+// ============================================
+// AUTO-DETECT MEETINGS (Tactiq-style silent start)
+// Runs in the background from the moment the
+// content script loads — no user click needed.
+// ============================================
+
+// 1. Try immediately + on DOMContentLoaded/load
+autoDetectAndStartCaptions();
+if (document.readyState !== 'complete') {
+  window.addEventListener('load', () => setTimeout(autoDetectAndStartCaptions, 1500));
+}
+
+// 2. Retry every 3 s for 90 s — covers slow Meet renders and delayed joins
+let _autoRetries = 0;
+const _autoRetryInterval = setInterval(() => {
+  _autoRetries++;
+  if (_autoRetries > 30 || captionScraper) {
+    clearInterval(_autoRetryInterval);
+    return;
+  }
+  autoDetectAndStartCaptions();
+}, 3000);
+
+// 3. Watch for SPA navigations inside Meet (pushState / popstate)
+//    Meet is a single-page app — URL changes without full reloads.
+const _origPush = history.pushState;
+history.pushState = function (data: any, title: string, url?: string | URL | null) {
+  _origPush.call(this, data, title, url);
+  // Small delay so the new page content renders before we check
+  setTimeout(() => {
+    autoDetectAndStartCaptions();
+    onNavigationAway();
+  }, 1000);
+};
+window.addEventListener('popstate', () => {
+  setTimeout(() => {
+    autoDetectAndStartCaptions();
+    onNavigationAway();
+  }, 1000);
 });

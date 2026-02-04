@@ -28,15 +28,58 @@ export class MeetCaptionScraper {
   private lastEmittedText = '';
   private captionRoot: Element | null = null;
   private scanInterval: ReturnType<typeof setInterval> | null = null;
+  // Track consecutive system-message-only extractions; if too many, reset captionRoot
+  private consecutiveSystemMessages = 0;
 
   // --- Selectors tried in order. Google changes class names; we try multiple. ---
   // Container: the div that holds all caption blocks
   private static readonly CONTAINER_SELECTORS = [
     'div[jscontroller="TEjq6e"]',          // Meet caption container (seen in 2024-2025)
+    'div[jscontroller="mbtgMb"]',          // Alternative jscontroller seen in 2025
+    'div[jscontroller="r4E1ne"]',          // Another observed variant
     '[aria-live="polite"][role="status"]',  // Accessible live + status
     '[aria-live="polite"]',                 // Generic live region
     '[aria-live="assertive"]',
   ];
+
+  // Google Meet system notification patterns (ES + EN).
+  // These are NOT speech — they are internal Meet status messages.
+  private static readonly SYSTEM_PATTERNS: RegExp[] = [
+    /te uniste/i,
+    /you joined/i,
+    /se fue de la llamada/i,
+    /left the (call|meeting)/i,
+    /se unió a la llamada/i,
+    /joined the (call|meeting)/i,
+    /cámara está (de)?activad/i,
+    /camera is (off|on)/i,
+    /micrófono está (de)?activad/i,
+    /mic(rophone)? is (off|on|muted)/i,
+    /mano levantad/i,
+    /hand (is |is not )?raised/i,
+    /llegaste antes/i,
+    /you arrived before/i,
+    /reunión no está guardada/i,
+    /meeting is not being recorded/i,
+    /está compartiendo/i,
+    /you('re| are) sharing/i,
+    /organizador/i,
+    /organizer/i,
+    /no tienes la mano/i,
+    /esta reunión/i,
+    /esta llamada/i,
+    /presentación en pantalla/i,
+    /screen shar/i,
+    /you are the only one/i,
+    /eres el único/i,
+    /estás solo/i,
+    /solo en esta llamada/i,
+  ];
+
+  /** Returns true if the text looks like a Meet system notification, not speech. */
+  static isSystemMessage(text: string): boolean {
+    return MeetCaptionScraper.SYSTEM_PATTERNS.some(p => p.test(text));
+  }
 
   // Speaker name element (inside caption block)
   private static readonly SPEAKER_SELECTORS = [
@@ -112,6 +155,11 @@ export class MeetCaptionScraper {
     return this.captionRoot !== null;
   }
 
+  /** Returns the caption root element (so caller can hide it visually). */
+  getCaptionRoot(): Element | null {
+    return this.captionRoot;
+  }
+
   // ---- private helpers ----
 
   /**
@@ -119,24 +167,73 @@ export class MeetCaptionScraper {
    * Falls back to heuristic: look for aria-live regions in the lower half of the viewport.
    */
   private findContainer(): Element | null {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // ── Strategy 1: known attribute selectors (fast path) ──
     for (const sel of MeetCaptionScraper.CONTAINER_SELECTORS) {
       try {
-        const el = document.querySelector(sel);
-        if (el && el.textContent?.trim()) return el;
+        for (const el of document.querySelectorAll(sel)) {
+          const text = el.textContent?.trim();
+          if (text && !MeetCaptionScraper.isSystemMessage(text)) return el;
+        }
       } catch { /* invalid selector */ }
     }
 
-    // Heuristic fallback: any aria-live element in the bottom half of viewport with text
-    const liveDivs = document.querySelectorAll('[aria-live]');
-    for (const el of liveDivs) {
-      try {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 150 && rect.top > window.innerHeight * 0.25 && el.textContent?.trim()) {
-          console.log('MeetCaptionScraper: Found caption container via heuristic (aria-live in lower viewport)');
+    // ── Strategy 2: role="log" (Meet uses this in some versions) ──
+    try {
+      for (const el of document.querySelectorAll('[role="log"]')) {
+        const text = el.textContent?.trim();
+        if (text && !MeetCaptionScraper.isSystemMessage(text)) {
+          console.log('MeetCaptionScraper: Found via role="log"');
           return el;
         }
-      } catch { /* skip */ }
-    }
+      }
+    } catch { /* skip */ }
+
+    // ── Strategy 3: elementsFromPoint — probe where CC captions visually render ──
+    // Google Meet draws the caption overlay near the bottom of the video grid,
+    // above the toolbar.  Probe a grid of (x, y) positions and walk the hit-test
+    // stack from outer → inner to find the tightest container that is neither
+    // a single text line nor the whole page.
+    try {
+      const yFracs = [0.75, 0.70, 0.80, 0.65, 0.60, 0.85];
+      const xFracs = [0.50, 0.35, 0.65];
+
+      for (const yf of yFracs) {
+        for (const xf of xFracs) {
+          const stack = document.elementsFromPoint(vw * xf, vh * yf);
+          // Walk outer → inner: stack order is [innermost … outermost]
+          for (let i = stack.length - 1; i >= 0; i--) {
+            const el = stack[i];
+            if (!(el instanceof HTMLElement)) continue;
+            if (el === document.body || el === document.documentElement) continue;
+            const text = el.textContent?.trim();
+            if (!text || text.length < 5) continue;
+            if (MeetCaptionScraper.isSystemMessage(text)) continue;
+            const rect = el.getBoundingClientRect();
+            // Caption overlay: meaningful height (>25 px), not the full page (<45 % vh), decent width
+            if (rect.height < 25 || rect.height > vh * 0.45) continue;
+            if (rect.width < vw * 0.15) continue;
+            console.log('MeetCaptionScraper: Found via elementsFromPoint y=' + Math.round(vh * yf));
+            return el;
+          }
+        }
+      }
+    } catch { /* skip */ }
+
+    // ── Strategy 4: aria-live fallback (lower viewport, non-system text) ──
+    try {
+      for (const el of document.querySelectorAll('[aria-live]')) {
+        const rect = el.getBoundingClientRect();
+        const text = el.textContent?.trim();
+        if (rect.width > 150 && rect.top > vh * 0.25 && text && !MeetCaptionScraper.isSystemMessage(text)) {
+          console.log('MeetCaptionScraper: Found via aria-live heuristic');
+          return el;
+        }
+      }
+    } catch { /* skip */ }
+
     return null;
   }
 
@@ -150,6 +247,20 @@ export class MeetCaptionScraper {
     const { speaker, text } = this.readSpeakerAndText(this.captionRoot);
     if (!text || text === this.lastEmittedText) return;
 
+    // Drop Google Meet system notifications (not speech)
+    if (MeetCaptionScraper.isSystemMessage(text)) {
+      this.consecutiveSystemMessages++;
+      // After 3 system-only extractions the locked container is wrong — reset so we search again
+      if (this.consecutiveSystemMessages >= 3) {
+        console.log('MeetCaptionScraper: Container only produces system messages — resetting to find real CC container');
+        this.captionRoot = null;
+        this.consecutiveSystemMessages = 0;
+        this.lastEmittedText = '';
+      }
+      return;
+    }
+
+    this.consecutiveSystemMessages = 0;
     this.lastEmittedText = text;
     console.log('MeetCaptionScraper: Caption detected —', speaker, ':', text);
     this.onCaption({ speaker, text, timestamp: Date.now() });

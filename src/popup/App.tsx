@@ -300,6 +300,28 @@ function App() {
   // Meeting Mode
   const [isMeetingMode, setIsMeetingMode] = useState(false);
 
+  // Auto-detect meeting on popup open (like Tactiq: no user click needed)
+  useEffect(() => {
+    // Ask background: "is there an active meeting right now?"
+    chrome.runtime.sendMessage({ type: 'GET_AUTO_MEETING_STATE' }, (state: any) => {
+      if (chrome.runtime.lastError) return;
+      if (state?.isActive && state?.captions?.length > 0) {
+        console.log('App: Auto-meeting detected with', state.captions.length, 'buffered captions → entering meeting mode');
+        setIsMeetingMode(true);
+      }
+    });
+
+    // Also listen for live detection events (meeting starts AFTER popup opens)
+    const listener = (message: any) => {
+      if (message?.type === 'AUTO_MEETING_DETECTED') {
+        console.log('App: Received AUTO_MEETING_DETECTED live event');
+        setIsMeetingMode(true);
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, []);
+
   // Debounce ref for saving
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 

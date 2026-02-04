@@ -4,10 +4,9 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MeetingManager, MeetingStatus, TranscriptSegmentLocal, MeetingCallbacks } from '../services/meeting-manager';
-import { MeetingSession, TranscriptSegment } from '../services/meeting-storage';
+import { MeetingStatus, TranscriptSegmentLocal } from '../services/meeting-manager';
+import { TranscriptSegment } from '../services/meeting-storage';
 import { PDFExportService } from '../services/pdf-export';
-import { meetingStorage } from '../services/meeting-storage';
 import { getApiKeyWithCache } from '../services/api-keys';
 import { GOOGLE_API_KEY } from '../config';
 
@@ -446,42 +445,9 @@ const SearchIcon = () => (
   </svg>
 );
 
-const PlayIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M8 5v14l11-7z" />
-  </svg>
-);
-
-const MicIcon = ({ muted }: { muted: boolean }) => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    {muted ? (
-      <>
-        <line x1="1" y1="1" x2="23" y2="23" />
-        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
-        <line x1="12" y1="19" x2="12" y2="23" />
-        <line x1="8" y1="23" x2="16" y2="23" />
-      </>
-    ) : (
-      <>
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-        <line x1="12" y1="19" x2="12" y2="23" />
-        <line x1="8" y1="23" x2="16" y2="23" />
-      </>
-    )}
-  </svg>
-);
-
 const StopIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
     <rect x="6" y="6" width="12" height="12" rx="2" />
-  </svg>
-);
-
-const SparkleIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" />
   </svg>
 );
 
@@ -509,7 +475,7 @@ const WaveIcon = () => (
   </svg>
 );
 
-export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) => {
+export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId: _userId, onClose }) => {
   // State
   const [status, setStatus] = useState<MeetingStatus>('idle');
   const [isDetectingMeeting, setIsDetectingMeeting] = useState(false);
@@ -518,26 +484,95 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
     title?: string;
     canCapture: boolean;
   } | null>(null);
-  const [session, setSession] = useState<MeetingSession | null>(null);
   const [transcript, setTranscript] = useState<TranscriptSegmentLocal[]>([]);
   const [summary, setSummary] = useState<string>('');
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [error, setError] = useState<string>('');
-  const [isMicMuted, setIsMicMuted] = useState(false);
 
   // UX enhancement states
-  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const [isProcessingAudio] = useState(false);
   const [vadActive, setVadActive] = useState(false);
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
 
   // Refs
-  const meetingManagerRef = useRef<MeetingManager | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll transcript
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript]);
+
+  // ── Auto-captions (Tactiq-style): load buffered + listen live ──
+  // Runs once on mount. If background has captions buffered while popup
+  // was closed, populate transcript immediately. Then keep listening for
+  // new CAPTION_RECEIVED messages so captions keep flowing in real-time.
+  useEffect(() => {
+    let segCounter = 0;
+    const startTime = Date.now();
+
+    // 1. Load buffered captions from background
+    chrome.runtime.sendMessage({ type: 'GET_AUTO_MEETING_STATE' }, (state: any) => {
+      if (chrome.runtime.lastError || !state?.captions?.length) return;
+      console.log('MeetingPanel: Loading', state.captions.length, 'buffered CC captions');
+
+      const buffered: TranscriptSegmentLocal[] = state.captions.map((c: any) => ({
+        id: `cc_${++segCounter}_${c.timestamp}`,
+        timestamp: c.timestamp,
+        relativeTimeMs: c.timestamp - startTime,
+        speaker: c.speaker || 'Participante',
+        text: c.text,
+        isLiaResponse: false,
+        isLiaInvocation: (c.text || '').toLowerCase().includes('lia'),
+      }));
+
+      setTranscript(buffered);
+      setStatus('transcribing');
+      setVadActive(true);
+
+      // Update detected-meeting info so the UI shows the right platform
+      if (state.platform) {
+        setDetectedMeeting({
+          platform: state.platform === 'google-meet' ? 'google-meet' : 'zoom',
+          title: state.title,
+          canCapture: true,
+        });
+      }
+    });
+
+    // 2. Listen for live captions (arrive while popup is open)
+    const liveCaptionListener = (message: any) => {
+      if (message?.type !== 'CAPTION_RECEIVED') return;
+      if (!message.text?.trim()) return;
+
+      setTranscript((prev) => {
+        // Dedup: skip if the last segment has the same text
+        if (prev.length > 0 && prev[prev.length - 1].text === message.text.trim()) return prev;
+        return [
+          ...prev,
+          {
+            id: `cc_${++segCounter}_${Date.now()}`,
+            timestamp: message.timestamp || Date.now(),
+            relativeTimeMs: (message.timestamp || Date.now()) - startTime,
+            speaker: message.speaker || 'Participante',
+            text: message.text.trim(),
+            isLiaResponse: false,
+            isLiaInvocation: message.text.toLowerCase().includes('lia'),
+          },
+        ];
+      });
+
+      // Make sure we're in transcribing state
+      setStatus((prev) => (prev === 'idle' ? 'transcribing' : prev));
+      setVadActive(true);
+      if (message.speaker) setCurrentSpeaker(message.speaker);
+    };
+
+    chrome.runtime.onMessage.addListener(liveCaptionListener);
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(liveCaptionListener);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Helper to inject content script if not loaded
   const ensureContentScript = async (tabId: number): Promise<boolean> => {
@@ -609,129 +644,9 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
     detectMeeting();
   }, [detectMeeting]);
 
-  // Meeting manager callbacks
-  const meetingCallbacks: MeetingCallbacks = {
-    onTranscriptUpdate: (segment) => {
-      setTranscript((prev) => [...prev, segment]);
-
-      // Update current speaker if present
-      if (segment.speaker && !segment.isLiaResponse) {
-        setCurrentSpeaker(segment.speaker);
-      }
-
-      // Reset processing indicator after transcript update
-      setIsProcessingAudio(false);
-    },
-    onLiaResponse: (text, _audioData) => {
-      if (text) {
-        setTranscript((prev) => [
-          ...prev,
-          {
-            id: `lia_${Date.now()}`,
-            timestamp: Date.now(),
-            relativeTimeMs: Date.now() - (session?.start_time ? new Date(session.start_time).getTime() : Date.now()),
-            text,
-            isLiaResponse: true,
-            isLiaInvocation: false,
-          },
-        ]);
-      }
-    },
-    onStatusChange: (newStatus) => {
-      setStatus(newStatus);
-
-      // Track processing state
-      if (newStatus === 'transcribing') {
-        setIsProcessingAudio(true);
-        setVadActive(true);
-      } else if (newStatus === 'ended' || newStatus === 'error') {
-        setIsProcessingAudio(false);
-        setVadActive(false);
-        setCurrentSpeaker(null);
-      }
-    },
-    onError: (err) => {
-      setError(err.message);
-      setIsProcessingAudio(false);
-      console.error('Meeting error:', err);
-    },
-    onSessionEnd: (endedSession) => {
-      setSession(endedSession);
-      setIsProcessingAudio(false);
-      setVadActive(false);
-      setCurrentSpeaker(null);
-    },
-  };
-
-  // Start meeting capture
-  const startMeeting = async () => {
-    if (!detectedMeeting?.platform || !detectedMeeting.canCapture) {
-      setError('No se detectó una reunión activa');
-      return;
-    }
-
-    setError('');
-    setStatus('connecting');
-
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-      if (!tab?.id) {
-        throw new Error('No se pudo obtener la pestaña activa');
-      }
-
-      meetingManagerRef.current = new MeetingManager(meetingCallbacks);
-
-      const newSession = await meetingManagerRef.current.startSession(
-        tab.id,
-        detectedMeeting.platform,
-        userId,
-        detectedMeeting.title,
-        tab.url
-      );
-
-      setSession(newSession);
-      setTranscript([]);
-      setSummary('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al iniciar la reunión');
-      setStatus('error');
-    }
-  };
-
-  // End meeting
-  const endMeeting = async () => {
-    if (!meetingManagerRef.current) return;
-
-    try {
-      await meetingManagerRef.current.endSession(true);
-      meetingManagerRef.current = null;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al terminar la reunión');
-    }
-  };
-
-  // Toggle microphone
-  const toggleMic = () => {
-    if (meetingManagerRef.current) {
-      setIsMicMuted(!isMicMuted);
-    }
-  };
-
-  // Invoke Lia
-  const invokeLia = async (prompt?: string) => {
-    if (!meetingManagerRef.current) return;
-
-    try {
-      await meetingManagerRef.current.invokeLia(prompt);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al invocar a SOFLIA');
-    }
-  };
-
   // Generate summary
   const generateSummary = async (type: SummaryType) => {
-    if (!meetingManagerRef.current && transcript.length === 0) {
+    if (transcript.length === 0) {
       setError('No hay transcripción para resumir');
       return;
     }
@@ -740,36 +655,27 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
     setError('');
 
     try {
-      let summaryText: string;
+      const transcriptText = transcript
+        .map((s) => {
+          const time = new Date(s.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+          const speaker = s.isLiaResponse ? 'SOFLIA' : (s.speaker || 'Participante');
+          return `[${time}] ${speaker}: ${s.text}`;
+        })
+        .join('\n');
 
-      if (meetingManagerRef.current) {
-        summaryText = await meetingManagerRef.current.generateSummary(type);
-      } else {
-        const transcriptText = transcript
-          .map((s) => {
-            const time = new Date(s.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-            const speaker = s.isLiaResponse ? 'SOFLIA' : (s.speaker || 'Participante');
-            return `[${time}] ${speaker}: ${s.text}`;
-          })
-          .join('\n');
-
-        const { GoogleGenerativeAI } = await import('@google/generative-ai');
-        // Get API key from database or fallback to env
-        let apiKey = await getApiKeyWithCache('google');
-        if (!apiKey) {
-          apiKey = GOOGLE_API_KEY;
-        }
-        if (!apiKey) {
-          throw new Error('No API key configured');
-        }
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-        const result = await model.generateContent(`Resume esta reunión (${type}):\n\n${transcriptText}`);
-        summaryText = result.response.text();
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      let apiKey = await getApiKeyWithCache('google');
+      if (!apiKey) {
+        apiKey = GOOGLE_API_KEY;
       }
+      if (!apiKey) {
+        throw new Error('No API key configured');
+      }
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-      setSummary(summaryText);
+      const result = await model.generateContent(`Resume esta reunión (${type}):\n\n${transcriptText}`);
+      setSummary(result.response.text());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al generar resumen');
     } finally {
@@ -779,17 +685,28 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
 
   // Export to PDF
   const exportPDF = async () => {
-    if (!session) {
-      setError('No hay sesión para exportar');
+    if (transcript.length === 0) {
+      setError('No hay transcripción para exportar');
       return;
     }
 
     try {
       const pdfService = new PDFExportService('es');
+      const now = new Date();
 
-      let fullTranscript: TranscriptSegment[] = transcript.map((s) => ({
+      // Build a minimal session object for the PDF generator
+      const sessionForPdf = {
+        id: `local_${Date.now()}`,
+        platform: detectedMeeting?.platform || 'google-meet',
+        title: detectedMeeting?.title || 'Reunión',
+        start_time: new Date(transcript[0].timestamp).toISOString(),
+        end_time: now.toISOString(),
+        summary: summary || null,
+      };
+
+      const fullTranscript: TranscriptSegment[] = transcript.map((s) => ({
         id: s.id,
-        session_id: session.id,
+        session_id: sessionForPdf.id,
         timestamp: new Date(s.timestamp).toISOString(),
         relative_time_ms: s.relativeTimeMs,
         speaker: s.isLiaResponse ? 'SOFLIA' : (s.speaker || null),
@@ -801,31 +718,20 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
         created_at: new Date().toISOString(),
       }));
 
-      if (status === 'ended') {
-        try {
-          const storedTranscript = await meetingStorage.getTranscript(session.id);
-          if (storedTranscript.length > 0) {
-            fullTranscript = storedTranscript;
-          }
-        } catch (e) {
-          console.warn('Could not fetch stored transcript', e);
-        }
-      }
-
       const blob = await pdfService.generateMeetingPDF(
         {
-          session: { ...session, summary: summary || session.summary || null },
+          session: sessionForPdf as any,
           transcript: fullTranscript,
         },
         {
           includeTranscript: true,
-          includeSummary: !!summary || !!session.summary,
+          includeSummary: !!summary,
           includeActionItems: false,
           language: 'es',
         }
       );
 
-      PDFExportService.downloadPDF(blob, PDFExportService.generateFilename(session));
+      PDFExportService.downloadPDF(blob, PDFExportService.generateFilename(sessionForPdf as any));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al exportar PDF');
     }
@@ -871,7 +777,7 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
           </div>
           
           {/* Platform badge inline */}
-          {session && <span className="hide-text-on-compact" style={styles.platformBadge}>{session.platform === 'google-meet' ? 'MEET' : 'ZOOM'}</span>}
+          {detectedMeeting?.platform && <span className="hide-text-on-compact" style={styles.platformBadge}>{detectedMeeting.platform === 'google-meet' ? 'MEET' : 'ZOOM'}</span>}
         </div>
         
         {onClose && (
@@ -1022,18 +928,9 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
                       </span>
                     </div>
                     {detectedMeeting.title && <p style={styles.meetingTitle}>{detectedMeeting.title}</p>}
-                    <button
-                      style={{
-                        ...styles.startButton,
-                        opacity: detectedMeeting.canCapture ? 1 : 0.5,
-                        cursor: detectedMeeting.canCapture ? 'pointer' : 'not-allowed',
-                      }}
-                      onClick={startMeeting}
-                      disabled={!detectedMeeting.canCapture}
-                    >
-                      <PlayIcon />
-                      Iniciar Transcripción
-                    </button>
+                    <p style={{ ...styles.noMeetingText, color: 'var(--color-accent)', fontSize: '12px' }}>
+                      Transcripción automática activa — habla en la reunión para ver el texto aquí.
+                    </p>
                   </>
                 ) : (
                   <p style={styles.noMeetingText}>
@@ -1047,42 +944,17 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
           </div>
         )}
 
-        {/* Active Meeting Controls */}
+        {/* Active Meeting Controls — CC auto-mode only */}
         {isActive && (
           <div style={styles.controlsBar}>
-            <button
-              style={{
-                ...styles.iconButton,
-                backgroundColor: isMicMuted ? '#ef4444' : 'var(--bg-dark-secondary)',
-                color: isMicMuted ? '#fff' : 'var(--color-white)',
-              }}
-              onClick={toggleMic}
-              title={isMicMuted ? 'Activar micrófono' : 'Silenciar micrófono'}
-            >
-              <MicIcon muted={isMicMuted} />
-            </button>
-
-            <button
-              style={{
-                ...styles.liaButton,
-                opacity: status === 'lia_responding' ? 0.7 : 1,
-                cursor: status === 'lia_responding' ? 'not-allowed' : 'pointer',
-              }}
-              onClick={() => invokeLia()}
-              disabled={status === 'lia_responding'}
-            >
-              <SparkleIcon />
-              {status === 'lia_responding' ? 'SOFLIA respondiendo...' : 'Invocar a SOFLIA'}
-            </button>
-
             <button
               style={{
                 ...styles.iconButton,
                 backgroundColor: '#ef4444',
                 color: '#fff',
               }}
-              onClick={endMeeting}
-              title="Finalizar reunión"
+              onClick={() => { setStatus('ended'); setVadActive(false); setCurrentSpeaker(null); }}
+              title="Detener transcripción"
             >
               <StopIcon />
             </button>
@@ -1177,7 +1049,6 @@ export const MeetingPanel: React.FC<MeetingPanelProps> = ({ userId, onClose }) =
               style={styles.newMeetingButton}
               onClick={() => {
                 setStatus('idle');
-                setSession(null);
                 setTranscript([]);
                 setSummary('');
                 detectMeeting();
