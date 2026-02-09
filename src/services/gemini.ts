@@ -521,7 +521,8 @@ export async function sendMessageStream(
   },
   projectContext?: string,
   thinkingConfig?: ThinkingConfig,
-  images?: string[]
+  images?: string[],
+  toolPrompt?: string // Tool Library: inject custom tool system prompt
 ) {
   // Determine IDs
   const primaryId = modelOverrides?.primary || MODELS.PRIMARY;
@@ -575,6 +576,12 @@ export async function sendMessageStream(
   // Inject Project Context if available
   if (projectContext) {
       systemInstruction += `\n\n=== PROJECT CONTEXT (SHARED KNOWLEDGE) ===\nThe user has grouped this chat in a project folder. Here is relevant context from other chats in the same project:\n\n${projectContext}\n\nUse this information to provide more cohesive and context-aware responses across the project.\n==========================================\n`;
+  }
+
+  // Inject Tool Prompt if a tool is active
+  if (toolPrompt) {
+      systemInstruction += `\n\n=== HERRAMIENTA ACTIVA ===\nEl usuario ha activado una herramienta especializada. Debes seguir las siguientes instrucciones específicas:\n\n${toolPrompt}\n\nComportate según estas instrucciones mientras la herramienta esté activa.\n==========================\n`;
+      console.log('🛠️ Tool prompt injected:', toolPrompt.substring(0, 100) + '...');
   }
 
   // Build generation config with thinking settings

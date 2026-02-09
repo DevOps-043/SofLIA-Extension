@@ -10,6 +10,9 @@ import { FeedbackModal as _FeedbackModal } from './FeedbackModal';
 import { MapViewer } from '../components/MapViewer';
 import { ProjectHub } from '../components/ProjectHub';
 import { MeetingPanel } from '../components/MeetingPanel';
+import { ToolLibrary } from '../components/ToolLibrary';
+import { ToolEditorModal } from '../components/ToolEditorModal';
+import type { Tool, UserTool } from '../services/tools';
 
 interface GroundingSource {
   uri: string;
@@ -195,6 +198,12 @@ function App() {
   // Gemini 2.5: 'off', 'low', 'medium', 'high'
   const [thinkingMode, setThinkingMode] = useState<string>('minimal');
   const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
+
+  // Tool Library State
+  const [activeTool, setActiveTool] = useState<Tool | UserTool | null>(null);
+  const [isToolLibraryOpen, setIsToolLibraryOpen] = useState(false);
+  const [isToolEditorOpen, setIsToolEditorOpen] = useState(false);
+  const [editingTool, setEditingTool] = useState<UserTool | null>(null);
 
   // Handler for model change
   const handleModelChange = async (type: 'primary' | 'fallback', modelId: string) => {
@@ -1667,7 +1676,9 @@ function App() {
         { primary: preferredPrimaryModel },
         undefined, // personalization
         undefined, // projectContext
-        { mode: thinkingMode as 'off' | 'minimal' | 'low' | 'medium' | 'high', type: thinkingType }
+        { mode: thinkingMode as 'off' | 'minimal' | 'low' | 'medium' | 'high', type: thinkingType },
+        imagesToUse.length > 0 ? imagesToUse : undefined, // images
+        activeTool?.system_prompt // toolPrompt
       ));
 
       let fullText = '';
@@ -1954,6 +1965,67 @@ function App() {
               </button>
             </div>
           )}
+
+          {/* Active Tool Indicator */}
+          {activeTool && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '3px 8px',
+              background: 'rgba(168, 85, 247, 0.12)',
+              borderRadius: '8px',
+              fontSize: '10px',
+              color: '#a855f7',
+              fontWeight: 500
+            }}>
+              <span>{activeTool.icon}</span>
+              <span className="hide-text-on-compact" style={{ maxWidth: '60px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {activeTool.name}
+              </span>
+              <button
+                onClick={() => setActiveTool(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: '0',
+                  marginLeft: '1px',
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  display: 'flex',
+                  opacity: 0.6
+                }}
+                title="Desactivar herramienta"
+              >
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+          )}
+
+          {/* Tool Library button */}
+          <button
+            onClick={() => setIsToolLibraryOpen(true)}
+            style={{
+              background: isToolLibraryOpen ? 'var(--bg-dark-tertiary)' : 'var(--bg-dark-secondary)',
+              border: `1px solid ${isToolLibraryOpen || activeTool ? 'var(--color-accent)' : 'transparent'}`,
+              borderRadius: '6px',
+              padding: '6px',
+              cursor: 'pointer',
+              color: isToolLibraryOpen || activeTool ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+              transition: 'all 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            title="Biblioteca de Herramientas"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+          </button>
 
           {/* Meeting button */}
           <button
@@ -4223,6 +4295,44 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Tool Library Modal */}
+      {isToolLibraryOpen && (
+        <ToolLibrary
+          onSelectTool={(tool) => {
+            setActiveTool(tool);
+            setIsToolLibraryOpen(false);
+          }}
+          onClose={() => setIsToolLibraryOpen(false)}
+          onCreateTool={() => {
+            setEditingTool(null);
+            setIsToolEditorOpen(true);
+          }}
+          onEditTool={(tool) => {
+            setEditingTool(tool);
+            setIsToolEditorOpen(true);
+          }}
+        />
+      )}
+
+      {/* Tool Editor Modal */}
+      <ToolEditorModal
+        isOpen={isToolEditorOpen}
+        tool={editingTool}
+        onClose={() => {
+          setIsToolEditorOpen(false);
+          setEditingTool(null);
+        }}
+        onSave={() => {
+          setIsToolEditorOpen(false);
+          setEditingTool(null);
+          // Refresh tool library by closing and reopening if open
+          if (isToolLibraryOpen) {
+            setIsToolLibraryOpen(false);
+            setTimeout(() => setIsToolLibraryOpen(true), 100);
+          }
+        }}
+      />
     </div>
   );
 }
