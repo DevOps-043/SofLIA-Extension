@@ -19,11 +19,17 @@ export const CONTENT_GEN_SUPABASE = {
   ANON_KEY: import.meta.env.VITE_CONTENT_GEN_SUPABASE_ANON_KEY || ''
 };
 
+// IRIS Project Management Supabase (gestión de proyectos, issues, equipos)
+export const IRIS_SUPABASE = {
+  URL: import.meta.env.VITE_IRIS_SUPABASE_URL || '',
+  ANON_KEY: import.meta.env.VITE_IRIS_SUPABASE_ANON_KEY || ''
+};
+
 // Model Configurations
 export const MODELS = {
   PRIMARY: "gemini-3-flash-preview",  // Gemini 3 Flash (free tier disponible)
   FALLBACK: "gemini-2.5-flash",  // Fallback estable (no preview, amplia disponibilidad)
-  WEB_AGENT: "gemini-2.5-flash",  // Web agent with function calling (needs stable tool support)
+  WEB_AGENT: "gemini-3-flash-preview",  // Web agent with function calling (Gemini 3 supports Computer Use since Jan 29 2026)
   IMAGE_GENERATION: "gemini-2.5-flash-image",
   DEEP_RESEARCH: "deep-research-pro-preview-12-2025",
   LIVE: "gemini-2.5-flash-native-audio-preview-12-2025",  // Live API WebSocket (bidiGenerateContent)

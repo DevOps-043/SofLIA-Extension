@@ -196,13 +196,22 @@ Esto mantiene al usuario informado.`;
 
 /** Patterns that indicate the user wants browser interaction */
 const WEB_AGENT_PATTERNS = [
-  // Navigation (Spanish)
-  /\b(llévame|llevame|ve a|ir a|abre|abrir|navega|navegar|entra|entrar)\b.*(página|pagina|sitio|web|correo|inbox|bandeja|gmail|youtube|twitter|facebook|amazon|google|tienda|store)/i,
-  /\b(llévame|llevame|ve a|ir a|abre|abrir|navega|navegar|entra|entrar)\b.*(mi|el|la|los|las|al|a la)\b/i,
+  // Navigation (Spanish) — [aá]br[ei]\w* handles enclitic forms: abre, abrir, abrelo, ábrelo, ábrela...
+  /(?:^|\s)(ll[eé]vame|ve a|ir a|[aá]br[ei]\w*|navega\w*|entra\w*)\b.*(página|pagina|sitio|web|correo|inbox|bandeja|gmail|youtube|twitter|facebook|amazon|google|tienda|store)/i,
+  /(?:^|\s)(ll[eé]vame|ve a|ir a|[aá]br[ei]\w*|navega\w*|entra\w*)\b.*(mi|el|la|los|las|al|a la)\b/i,
   // Action verbs (Spanish)
   /\b(haz click|haz clic|has click|has clic|clickea|pulsa|presiona|toca)\b/i,
   /\b(escribe|escribir|rellena|rellenar|llena|llenar|completa|completar)\b.*(campo|formulario|input|busca|barra|texto)/i,
   /\b(busca|buscar|búscame|buscame)\b.*(en|dentro|la página|la pagina|amazon|google|youtube|tienda|mercado|ebay)/i,
+  // Search + email/message context (catches "busca mi correo", "busca el email", etc.)
+  /\b(busca|buscar|búscame|buscame)\b.*(correo|correos|email|emails|inbox|bandeja|mensaje|mensajes|factura|facturas|billing|recibo|notificaci[oó]n|notificaciones)/i,
+  // "busca mi/mis" implies browser search for personal content
+  /\b(busca|buscar)\s+(mi|mis)\b/i,
+  // Review/read + email/message context (catches "revisa mis correos", "lee mis emails", etc.)
+  /\b(revisa|revisar|lee|leer|checa|checar|mira|mirar)\b.*(correo|correos|email|emails|inbox|bandeja|mensaje|mensajes|notificaci[oó]n|notificaciones)/i,
+  // Enclitic pronoun verb forms (ábrelo, búscalo, ciérralo, etc.)
+  // Note: no \b before accented chars — JS \b doesn't work with non-ASCII (á, é, í, etc.)
+  /(?:^|\s)(ábrelo|abrelo|ábrela|abrela|búscalo|buscalo|búscalos|buscalos|ciérralo|cierralo|envíalo|envialo|descárgalo|descargalo|léelo|leelo|léela|leela)(?:\s|$|[,.])/i,
   /\b(selecciona|seleccionar|elige|elegir|marca|marcar|desmarca)\b/i,
   /\b(scroll|desplaza|desplázate|baja|sube)\b.*(página|pagina|abajo|arriba)/i,
   /\b(envía|envia|enviar|mandar|manda)\b.*(correo|email|mensaje|formulario|form)/i,
@@ -214,6 +223,8 @@ const WEB_AGENT_PATTERNS = [
   /\b(click|tap|press|hit)\b.*(on|the|button|link|icon)/i,
   /\b(type|write|enter|fill|input)\b.*(in|into|the|field|form|box|bar)/i,
   /\b(search|find|look for|search for)\b.*(on|in|at|the page|amazon|google|youtube)/i,
+  // Search + email context (English)
+  /\b(search|find|look for|check)\b.*(email|emails|inbox|mail|message|messages)/i,
   /\b(scroll|swipe)\b.*(up|down|left|right|page)/i,
   /\b(submit|send|post)\b.*(form|email|message)/i,
   /\b(select|choose|pick|check|uncheck)\b.*(option|item|checkbox|radio)/i,

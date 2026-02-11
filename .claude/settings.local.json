@@ -23,7 +23,10 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:developer.chrome.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(npx vite build)"
+      "Bash(npx vite build)",
+      "Bash(node:*)",
+      "Bash(ls:*)",
+      "Bash(npm ls:*)"
     ]
   }
 }

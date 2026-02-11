@@ -35,6 +35,7 @@ export class LiveClient {
   private playedBuffersCount: number = 0;  // Track buffers to reset periodically
   private enableComputerUse: boolean = false;  // Enable Computer Use tools
   private pageContext: PageContext | null = null;  // Current page context
+  private retriedWithoutTools: boolean = false;  // Track if we already retried without tools
 
   constructor(callbacks: LiveCallbacks, enableComputerUse: boolean = false) {
     this.callbacks = callbacks;
@@ -172,19 +173,23 @@ export class LiveClient {
             systemInstructionText += " Cuando el usuario pregunte sobre información actual, noticias, clima, eventos recientes o cualquier dato que requiera información actualizada, usa la herramienta de búsqueda de Google para obtener información precisa y actual.";
           }
 
-          // Build tools array
+          // Build tools array (skip on retry after invalid argument error)
           const tools: any[] = [];
 
-          if (this.enableComputerUse) {
-            // Add Computer Use tools (click, type, scroll, etc.)
-            tools.push(...WEB_AGENT_TOOLS);
+          if (!this.retriedWithoutTools) {
+            if (this.enableComputerUse) {
+              // Add Computer Use tools (click, type, scroll, etc.)
+              tools.push(...WEB_AGENT_TOOLS);
+            }
+            // Add Google Search grounding
+            tools.push({ googleSearch: {} });
+          } else {
+            console.warn("Live API: Connecting without tools (retry after invalid argument)");
           }
 
-          // Always add Google Search
-          tools.push({ googleSearch: {} });
-
           // Setup message format according to BidiGenerateContent API
-          const setupMessage = {
+          // NOTE: Keep setup minimal — native audio models reject unknown/unsupported fields
+          const setupMessage: any = {
             setup: {
               model: `models/${MODELS.LIVE}`,
               generationConfig: {
@@ -197,20 +202,18 @@ export class LiveClient {
                   }
                 }
               },
-              // Enable automatic voice activity detection so the model knows when user stops speaking
-              realtimeInputConfig: {
-                automaticActivityDetection: {
-                  disabled: false  // VAD enabled
-                }
-              },
               systemInstruction: {
                 parts: [{
                   text: systemInstructionText
                 }]
-              },
-              tools: tools
+              }
             }
           };
+
+          // Only include tools in setup if we have any
+          if (tools.length > 0) {
+            setupMessage.setup.tools = tools;
+          }
 
           console.log("Live API: Setup message:", JSON.stringify(setupMessage, null, 2));
           this.send(setupMessage);
@@ -293,8 +296,20 @@ export class LiveClient {
 
         this.ws.onclose = (event) => {
           console.log("Live API: WebSocket closed", event.code, event.reason);
+          const wasSetupComplete = this.setupComplete;
           this.isConnected = false;
           this.setupComplete = false;
+
+          // If setup failed with invalid argument, retry once without tools
+          // Tools (googleSearch, computerUse) may not be supported by this model version
+          const reason = (event.reason || '').toLowerCase();
+          if (!wasSetupComplete && !this.retriedWithoutTools &&
+              (reason.includes('invalid') || reason.includes('argument'))) {
+            console.warn("Live API: Setup rejected (invalid argument), retrying without tools...");
+            this.retriedWithoutTools = true;
+            this.connect().then(resolve).catch(reject);
+            return;
+          }
 
           // Provide meaningful error messages based on close codes
           let closeReason = event.reason || '';
@@ -306,7 +321,7 @@ export class LiveClient {
             closeReason = 'Error del servidor de Live API. Intenta más tarde.';
           }
 
-          if (closeReason && !this.setupComplete) {
+          if (closeReason && !wasSetupComplete) {
             console.warn("Live API: Close reason:", closeReason);
             // Only call onError if setup wasn't complete (actual connection error)
             this.callbacks.onError(new Error(closeReason));
@@ -547,10 +562,10 @@ export class LiveClient {
 
     this.send({
       realtimeInput: {
-        mediaChunks: [{
-          mimeType: "audio/pcm;rate=16000",
-          data: base64Audio
-        }]
+        audio: {
+          data: base64Audio,
+          mimeType: "audio/pcm;rate=16000"
+        }
       }
     });
   }
@@ -635,6 +650,7 @@ ${this.pageContext.accessibilityTree}
   disconnect() {
     this.isConnected = false;
     this.setupComplete = false;
+    this.retriedWithoutTools = false;
 
     // Clear session check interval
     if (this.sessionCheckInterval) {
