@@ -15,7 +15,12 @@ export type ToolCategory =
   | 'educacion' 
   | 'productividad' 
   | 'creatividad' 
-  | 'analisis';
+  | 'analisis'
+  | 'documentos'
+  | 'diagramas'
+  | 'comunicacion';
+
+export type ToolType = 'prompt' | 'tool';
 
 export type ToolStatus = 'pending' | 'approved' | 'rejected';
 
@@ -34,6 +39,9 @@ export interface Tool {
   rejection_reason: string | null;
   usage_count: number;
   is_featured: boolean;
+  tool_type: ToolType;
+  generator_id: string | null;
+  output_formats: string[];
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +104,31 @@ export async function getPublicTools(category?: ToolCategory): Promise<Tool[]> {
     throw error;
   }
   
+  return data || [];
+}
+
+/**
+ * Get public tools filtered by tool_type (prompt or tool)
+ */
+export async function getPublicToolsByType(toolType: ToolType, category?: ToolCategory): Promise<Tool[]> {
+  let query = supabase
+    .from('tools')
+    .select('*')
+    .eq('status', 'approved')
+    .eq('tool_type', toolType)
+    .order('usage_count', { ascending: false });
+
+  if (category) {
+    query = query.eq('category', category);
+  }
+
+  const { data, error } = await query;
+  
+  if (error) {
+    console.error('Error fetching tools by type:', error);
+    throw error;
+  }
+
   return data || [];
 }
 
@@ -417,6 +450,9 @@ export const TOOL_CATEGORIES: { value: ToolCategory; label: string; icon: string
   { value: 'productividad', label: 'Productividad', icon: '📋' },
   { value: 'creatividad', label: 'Creatividad', icon: '🎨' },
   { value: 'analisis', label: 'Análisis', icon: '📊' },
+  { value: 'documentos', label: 'Documentos', icon: '📄' },
+  { value: 'diagramas', label: 'Diagramas', icon: '🔀' },
+  { value: 'comunicacion', label: 'Comunicación', icon: '✉️' },
 ];
 
 export function getCategoryLabel(category: ToolCategory): string {

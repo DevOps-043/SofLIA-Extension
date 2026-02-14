@@ -67,6 +67,21 @@ const CategoryIcons: Record<string, React.ReactNode> = {
       <path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/>
     </svg>
   ),
+  documentos: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+    </svg>
+  ),
+  diagramas: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><path d="M6 9v3h12V9M12 12v3"/>
+    </svg>
+  ),
+  comunicacion: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+    </svg>
+  ),
 };
 
 const DefaultToolIcon = () => (
@@ -82,18 +97,21 @@ const FolderIcon = () => (
 );
 
 type TabType = 'public' | 'mine' | 'favorites';
+type TypeFilter = 'all' | 'prompt' | 'tool';
 
 interface ToolLibraryProps {
   onSelectTool: (tool: Tool | UserTool) => void;
   onClose: () => void;
   onCreateTool?: () => void;
   onEditTool?: (tool: UserTool) => void;
+  onGenerateTool?: (tool: Tool) => void;
 }
 
-export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }: ToolLibraryProps) {
+export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool, onGenerateTool }: ToolLibraryProps) {
   const [activeTab, setActiveTab] = useState<TabType>('public');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<ToolCategory | 'all'>('all');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   
@@ -159,6 +177,13 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
       case 'mine': tools = userTools; break;
       case 'favorites': tools = favoriteTools; break;
     }
+    // Type filter (prompt vs tool) — only applies to public & favorites
+    if (typeFilter !== 'all' && activeTab !== 'mine') {
+      tools = tools.filter(t => {
+        const toolType = ('tool_type' in t) ? (t as Tool).tool_type : 'prompt';
+        return toolType === typeFilter;
+      });
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       tools = tools.filter(t => t.name.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q));
@@ -167,7 +192,7 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
       tools = tools.filter(t => t.category === selectedCategory);
     }
     return tools;
-  }, [activeTab, publicTools, userTools, favoriteTools, searchQuery, selectedCategory]);
+  }, [activeTab, publicTools, userTools, favoriteTools, searchQuery, selectedCategory, typeFilter]);
 
   const handleToggleFavorite = async (toolId: string, isPublic: boolean) => {
     try {
@@ -214,7 +239,7 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
               </svg>
             </div>
-            <h2 className="tl-title">Biblioteca de Prompts</h2>
+            <h2 className="tl-title">Prompts & Herramientas</h2>
           </div>
           <button className="tl-close" onClick={onClose} aria-label="Cerrar">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -244,6 +269,27 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
             <span>Favoritas</span>
           </button>
         </nav>
+
+        {/* Type sub-filter (only on public & favorites tabs) */}
+        {activeTab !== 'mine' && (
+          <div className="tl-type-filter">
+            <button className={`tl-type-pill ${typeFilter === 'all' ? 'active' : ''}`} onClick={() => setTypeFilter('all')}>
+              Todos
+            </button>
+            <button className={`tl-type-pill ${typeFilter === 'prompt' ? 'active' : ''}`} onClick={() => setTypeFilter('prompt')}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              Prompts
+            </button>
+            <button className={`tl-type-pill ${typeFilter === 'tool' ? 'active' : ''}`} onClick={() => setTypeFilter('tool')}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+              </svg>
+              Herramientas
+            </button>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="tl-filters">
@@ -339,13 +385,17 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
                 const isPublicTool = 'status' in tool;
                 const isFav = isPublicTool ? favoriteIds.has(tool.id) : (tool as UserTool).is_favorite;
                 const cat = TOOL_CATEGORIES.find(c => c.value === tool.category);
+                const isProductivityTool = isPublicTool && (tool as Tool).tool_type === 'tool';
                 
                 return (
-                  <article key={tool.id} className="tl-card">
+                  <article key={tool.id} className={`tl-card ${isProductivityTool ? 'tl-card-tool' : ''}`}>
                     <div className="tl-card-top">
-                      <div className="tl-card-icon">
-                        <DefaultToolIcon />
+                      <div className={`tl-card-icon ${isProductivityTool ? 'tl-card-icon-tool' : ''}`}>
+                        {tool.icon ? <span style={{ fontSize: '20px' }}>{tool.icon}</span> : <DefaultToolIcon />}
                       </div>
+                      {isProductivityTool && (
+                        <span className="tl-card-badge">Herramienta</span>
+                      )}
                       <button
                         className={`tl-card-fav ${isFav ? 'active' : ''}`}
                         onClick={() => handleToggleFavorite(tool.id, isPublicTool)}
@@ -367,7 +417,16 @@ export function ToolLibrary({ onSelectTool, onClose, onCreateTool, onEditTool }:
                     <p className="tl-card-desc">{tool.description?.slice(0, 80)}{(tool.description?.length || 0) > 80 && '...'}</p>
 
                     <div className="tl-card-actions">
-                      <button className="tl-btn-use" onClick={() => onSelectTool(tool)}>Usar</button>
+                      {isProductivityTool && onGenerateTool ? (
+                        <button className="tl-btn-generate" onClick={() => onGenerateTool(tool as Tool)}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+                          </svg>
+                          Generar
+                        </button>
+                      ) : (
+                        <button className="tl-btn-use" onClick={() => onSelectTool(tool)}>Usar</button>
+                      )}
                       {!isPublicTool && (
                         <>
                           {onEditTool && (
@@ -815,6 +874,84 @@ const cssStyles = `
   color: ${COLORS.error};
   border-color: ${COLORS.error};
 }
+
+/* Type filter pills */
+.tl-type-filter {
+  display: flex;
+  gap: 6px;
+  padding: 8px 20px 0;
+}
+.tl-type-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: transparent;
+  color: var(--color-gray-medium);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tl-type-pill:hover {
+  border-color: rgba(255,255,255,0.2);
+  color: var(--color-white);
+}
+.tl-type-pill.active {
+  background: rgba(0,212,179,0.12);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+/* Tool card variants */
+.tl-card-tool {
+  border-color: rgba(0,212,179,0.15);
+  background: linear-gradient(135deg, var(--bg-dark-tertiary), rgba(0,212,179,0.03));
+}
+.tl-card-tool:hover {
+  border-color: rgba(0,212,179,0.35);
+  box-shadow: 0 4px 20px rgba(0,212,179,0.1);
+}
+.tl-card-icon-tool {
+  background: linear-gradient(135deg, rgba(0,212,179,0.2), rgba(16,185,129,0.15));
+}
+.tl-card-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: rgba(0,212,179,0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,212,179,0.2);
+  white-space: nowrap;
+}
+
+/* Generate button */
+.tl-btn-generate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, var(--color-accent), var(--color-success));
+  color: var(--color-on-accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tl-btn-generate:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 12px rgba(0,212,179,0.3);
+}
+
 @media (max-width: 480px) {
   .tl-modal { max-height: 95vh; border-radius: 16px; }
   .tl-tabs { padding: 8px 12px; }
@@ -826,6 +963,8 @@ const cssStyles = `
   .tl-dropdown-trigger span { display: none; }
   .tl-grid { grid-template-columns: 1fr; }
   .tl-content { padding: 12px; }
+  .tl-type-filter { padding: 8px 12px 0; overflow-x: auto; }
+  .tl-type-pill { white-space: nowrap; font-size: 11px; }
 }
 `;
 

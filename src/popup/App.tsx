@@ -12,6 +12,7 @@ import { ProjectHub } from '../components/ProjectHub';
 import { MeetingPanel } from '../components/MeetingPanel';
 import { ToolLibrary } from '../components/ToolLibrary';
 import { ToolEditorModal } from '../components/ToolEditorModal';
+import { ToolGeneratorModal } from '../components/ToolGeneratorModal';
 import { ProjectSuggestionModal } from '../components/ProjectSuggestionModal';
 import type { Tool, UserTool } from '../services/tools';
 
@@ -208,6 +209,7 @@ function App() {
   const [isToolEditorOpen, setIsToolEditorOpen] = useState(false);
   const [editingTool, setEditingTool] = useState<UserTool | null>(null);
   const [pendingPromptText, setPendingPromptText] = useState<string>(''); // Text to save as new prompt
+  const [generatorTool, setGeneratorTool] = useState<Tool | null>(null); // Tool for generator modal
 
   // Handler for model change
   const handleModelChange = async (type: 'primary' | 'fallback', modelId: string) => {
@@ -4869,6 +4871,10 @@ function App() {
             setEditingTool(tool);
             setIsToolEditorOpen(true);
           }}
+          onGenerateTool={(tool) => {
+            setGeneratorTool(tool);
+            setIsToolLibraryOpen(false);
+          }}
         />
       )}
 
@@ -4896,6 +4902,15 @@ function App() {
             setTimeout(() => setIsToolLibraryOpen(true), 100);
           }
         }}
+      />
+
+      {/* Tool Generator Modal */}
+      <ToolGeneratorModal
+        isOpen={!!generatorTool}
+        generatorId={generatorTool?.generator_id || null}
+        toolName={generatorTool?.name}
+        toolIcon={generatorTool?.icon}
+        onClose={() => setGeneratorTool(null)}
       />
 
       {/* Project Suggestion Modal - Proactive Organization */}
