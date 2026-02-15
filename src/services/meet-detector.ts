@@ -82,32 +82,136 @@ function areCaptionsAlreadyActive(): boolean {
       const elements = document.querySelectorAll(sel);
       for (const el of elements) {
         if (!(el instanceof HTMLElement)) continue;
-        const text = el.textContent?.trim() || '';
-        // If there's text and it's in the lower part of the screen, captions are active
-        if (text.length > 5) {
-          try {
-            const rect = el.getBoundingClientRect();
-            if (rect && rect.top > window.innerHeight * 0.4) {
+        try {
+          const rect = el.getBoundingClientRect();
+          // Check if the element is in the caption zone (lower part of screen)
+          if (rect && rect.top > window.innerHeight * 0.4 &&
+              rect.height > 10 && rect.width > 100) {
+            const text = el.textContent?.trim() || '';
+            // Accept: either has text (someone speaking) or is empty but exists in caption zone
+            if (text.length > 3 || (rect.height > 20 && rect.height < 300)) {
               return true;
             }
-          } catch { /* skip */ }
-        }
+          }
+        } catch { /* skip */ }
       }
     } catch { /* skip */ }
+  }
+
+  // Also check if the CC button is in "active" state (aria-pressed or "turn off" label)
+  const ccButton = findCCButton();
+  if (ccButton) {
+    const ariaPressed = ccButton.getAttribute('aria-pressed');
+    const ariaLabel = (ccButton.getAttribute('aria-label') || '').toLowerCase();
+    if (ariaPressed === 'true' ||
+        ariaLabel.includes('desactivar') ||
+        ariaLabel.includes('turn off') ||
+        ariaLabel.includes('ocultar') ||
+        ariaLabel.includes('hide')) {
+      return true;
+    }
   }
 
   return false;
 }
 
 /**
+ * Find the CC/subtitles button in Google Meet toolbar
+ * Uses multiple strategies to locate it
+ */
+function findCCButton(): HTMLElement | null {
+  // Strategy 1: aria-label based selectors (most common)
+  const ariaSelectors = [
+    'button[aria-label*="subtítulo" i]',
+    'button[aria-label*="subtitle" i]',
+    'button[aria-label*="caption" i]',
+    'button[aria-label*="Activar subtítulos" i]',
+    'button[aria-label*="Turn on captions" i]',
+    'button[aria-label*="Desactivar subtítulos" i]',
+    'button[aria-label*="Turn off captions" i]',
+    'button[aria-label*="subtítulos en vivo" i]',
+    'button[aria-label*="live captions" i]',
+    'button[aria-label*="closed caption" i]',
+    'button[aria-label*="subtítulos automáticos" i]',
+    'button[aria-label*="auto captions" i]',
+  ];
+
+  for (const sel of ariaSelectors) {
+    try {
+      const btn = document.querySelector(sel) as HTMLElement;
+      if (btn) return btn;
+    } catch { /* skip */ }
+  }
+
+  // Strategy 2: data-tooltip based (Google Meet uses tooltips)
+  const tooltipSelectors = [
+    'button[data-tooltip*="subtítulo" i]',
+    'button[data-tooltip*="caption" i]',
+    'button[data-tooltip*="subtitle" i]',
+  ];
+
+  for (const sel of tooltipSelectors) {
+    try {
+      const btn = document.querySelector(sel) as HTMLElement;
+      if (btn) return btn;
+    } catch { /* skip */ }
+  }
+
+  // Strategy 3: Look for the CC icon by its Material icon name or SVG content
+  // Google Meet uses material icons - look for "closed_caption" icon
+  const allButtons = document.querySelectorAll('button');
+  for (const btn of allButtons) {
+    try {
+      const text = btn.textContent?.trim().toLowerCase() || '';
+      // Material icon names
+      if (text === 'closed_caption' || text === 'closed_caption_off' ||
+          text === 'subtitles' || text === 'subtitles_off' ||
+          text === 'cc' || text === 'closed_caption_disabled') {
+        return btn as HTMLElement;
+      }
+      // Check for i/span with icon name inside button
+      const iconEl = btn.querySelector('i, span.material-icons, span.google-material-icons, [class*="icon"]');
+      if (iconEl) {
+        const iconText = iconEl.textContent?.trim().toLowerCase() || '';
+        if (iconText === 'closed_caption' || iconText === 'closed_caption_off' ||
+            iconText === 'subtitles' || iconText === 'subtitles_off') {
+          return btn as HTMLElement;
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Strategy 4: Look in the bottom toolbar for buttons near typical CC position
+  const toolbar = document.querySelector('[role="toolbar"]') ||
+                  document.querySelector('[class*="toolbar" i]');
+  if (toolbar) {
+    const toolbarBtns = toolbar.querySelectorAll('button');
+    for (const btn of toolbarBtns) {
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if (label.includes('cc') || label.includes('caption') ||
+          label.includes('subtítulo') || label.includes('subtitle')) {
+        return btn as HTMLElement;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Enable closed captions by clicking the CC button
- * Returns true if captions are enabled, false otherwise
+ * Returns true if captions are enabled or were already enabled, false otherwise
+ *
+ * Inspired by Tactiq's approach:
+ * 1. Find the CC button using multiple strategies
+ * 2. Check if already active
+ * 3. Click to activate if not active
+ * 4. Fallback: use keyboard shortcut (Ctrl+Shift+C)
  */
 export function enableClosedCaptions(): boolean {
-  // Check if settings dialog is open - close it and don't do anything else
+  // Check if settings dialog is open - close it first
   const settingsDialog = document.querySelector('[aria-modal="true"]');
   if (settingsDialog) {
-    // Close the dialog
     const closeBtn = settingsDialog.querySelector(
       'button[aria-label*="cerrar" i], button[aria-label*="close" i], button[aria-label*="Cerrar" i], button[aria-label*="Close" i]'
     ) as HTMLElement;
@@ -115,11 +219,11 @@ export function enableClosedCaptions(): boolean {
       closeBtn.click();
       console.log('Soflia: Closed settings dialog');
     } else {
-      // Try clicking outside or pressing escape
       const backdrop = document.querySelector('[data-backdrop="true"]') as HTMLElement;
       if (backdrop) backdrop.click();
     }
-    return true; // Assume captions are already on if dialog opened
+    // Don't return true yet - we need to actually check CC state after dialog closes
+    return false;
   }
 
   // If captions are already active, don't click anything
@@ -128,47 +232,79 @@ export function enableClosedCaptions(): boolean {
     return true;
   }
 
-  // Find CC button
-  const ccSelectors = [
-    'button[aria-label*="subtítulo" i]',
-    'button[aria-label*="subtitle" i]',
-    'button[aria-label*="caption" i]',
-    'button[aria-label*="Activar subtítulos" i]',
-    'button[aria-label*="Turn on captions" i]'
-  ];
+  // Find CC button using the robust finder
+  const btn = findCCButton();
 
-  for (const sel of ccSelectors) {
-    try {
-      const btn = document.querySelector(sel) as HTMLElement;
-      if (!btn) continue;
+  if (btn) {
+    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const ariaPressed = btn.getAttribute('aria-pressed');
 
-      // Check button state - if "Desactivar" or "Turn off" is in label, it's already on
-      const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-      if (ariaLabel.includes('desactivar') ||
-          ariaLabel.includes('turn off') ||
-          ariaLabel.includes('ocultar')) {
-        console.log('Soflia: CC already enabled (button says turn off)');
-        return true;
-      }
+    // Check if already enabled
+    if (ariaPressed === 'true') {
+      console.log('Soflia: CC already enabled (aria-pressed=true)');
+      return true;
+    }
 
-      // Check if already pressed
-      const isActive = btn.getAttribute('aria-pressed') === 'true';
-      if (isActive) {
-        console.log('Soflia: CC already enabled (aria-pressed)');
-        return true;
-      }
+    if (ariaLabel.includes('desactivar') ||
+        ariaLabel.includes('turn off') ||
+        ariaLabel.includes('ocultar') ||
+        ariaLabel.includes('hide')) {
+      console.log('Soflia: CC already enabled (button says turn off/desactivar)');
+      return true;
+    }
 
-      // Only click if label says "Activar" or "Turn on"
-      if (ariaLabel.includes('activar') || ariaLabel.includes('turn on') || ariaLabel.includes('habilitar')) {
-        btn.click();
-        console.log('Soflia: CC enabled via:', sel);
-        return true;
-      }
-    } catch { /* skip */ }
+    // If explicitly "off" state, click to enable
+    if (ariaPressed === 'false' ||
+        ariaLabel.includes('activar') ||
+        ariaLabel.includes('turn on') ||
+        ariaLabel.includes('habilitar') ||
+        ariaLabel.includes('enable') ||
+        ariaLabel.includes('mostrar') ||
+        ariaLabel.includes('show')) {
+      btn.click();
+      console.log('Soflia: CC enabled via button click, label:', ariaLabel);
+      return true;
+    }
+
+    // If button found but state is ambiguous (no "activar"/"desactivar" in label),
+    // check aria-pressed. If not set, try clicking it.
+    if (ariaPressed === null) {
+      // Button exists but state unknown - click it and hope for the best
+      btn.click();
+      console.log('Soflia: CC button clicked (ambiguous state), label:', ariaLabel);
+      return true;
+    }
   }
 
-  console.log('Soflia: CC button not found or already active');
+  console.log('Soflia: CC button not found, will try keyboard shortcut');
   return false;
+}
+
+/**
+ * Enable CC using keyboard shortcut as fallback
+ * Google Meet shortcut: 'c' key toggles captions
+ */
+export function enableCCViaKeyboard(): void {
+  try {
+    // Google Meet uses 'c' as keyboard shortcut for toggling captions
+    const meetVideo = document.querySelector('video') ||
+                      document.querySelector('[data-meeting-code]') ||
+                      document.body;
+
+    const keyEvent = new KeyboardEvent('keydown', {
+      key: 'c',
+      code: 'KeyC',
+      keyCode: 67,
+      which: 67,
+      bubbles: true,
+      cancelable: true,
+    });
+    meetVideo.dispatchEvent(keyEvent);
+
+    console.log('Soflia: Sent "c" keyboard shortcut to toggle CC');
+  } catch (e) {
+    console.error('Soflia: Error sending keyboard shortcut:', e);
+  }
 }
 
 /**
@@ -177,10 +313,11 @@ export function enableClosedCaptions(): boolean {
 function isInCaptionZone(element: HTMLElement): boolean {
   try {
     const rect = element.getBoundingClientRect();
-    // Captions appear in the lower 50% of the screen
-    return rect.top > window.innerHeight * 0.4 &&
-           rect.height > 20 && rect.height < 500 &&
-           rect.width > 150;
+    // Captions appear in the lower 60% of the screen
+    // Relaxed from 0.4 to 0.3 to account for side panels changing layout
+    return rect.top > window.innerHeight * 0.3 &&
+           rect.height > 15 && rect.height < 500 &&
+           rect.width > 100;
   } catch {
     return false;
   }
@@ -207,6 +344,33 @@ function isToolbarElement(element: HTMLElement): boolean {
  */
 export function findCaptionContainer(): HTMLElement | null {
   try {
+    // ============================================================
+    // STRATEGY 0: Google Meet specific selectors
+    // Look for known Google Meet caption container patterns
+    // ============================================================
+    const meetCaptionSelectors = [
+      // Google Meet uses these for caption overlays
+      'div[class*="caption" i]:not([role="toolbar"])',
+      'div[class*="subtitle" i]:not([role="toolbar"])',
+      '[jsname][aria-live]',
+      // Caption overlay near the bottom of the video area
+      'div[jscontroller] > div[aria-live="polite"]',
+      'div[jscontroller] > div[aria-live="assertive"]',
+    ];
+
+    for (const sel of meetCaptionSelectors) {
+      try {
+        const elements = document.querySelectorAll(sel);
+        for (const el of elements) {
+          if (!(el instanceof HTMLElement)) continue;
+          if (!isInCaptionZone(el)) continue;
+          if (isToolbarElement(el)) continue;
+          console.log('Soflia: Found caption container via Meet-specific selector:', sel);
+          return el;
+        }
+      } catch { /* skip invalid selectors */ }
+    }
+
     // ============================================================
     // STRATEGY 1: aria-live regions (most standard for captions)
     // aria-live in the caption zone is a strong enough signal

@@ -49,6 +49,19 @@ chrome.runtime.onInstalled.addListener(() => {
       }
     });
   });
+
+  // Setup daily signal check alarm (9:00 AM local time)
+  const now = new Date();
+  const next9am = new Date();
+  next9am.setHours(9, 0, 0, 0);
+  if (next9am.getTime() <= now.getTime()) {
+    next9am.setDate(next9am.getDate() + 1);
+  }
+  chrome.alarms.create('daily-signal-check', {
+    when: next9am.getTime(),
+    periodInMinutes: 24 * 60
+  });
+  console.log('Signal: Daily alarm set for', next9am.toISOString());
 });
 
 // Check if URL is injectable (not chrome://, edge://, about:, etc.)
@@ -103,6 +116,39 @@ chrome.tabs.onRemoved.addListener((tabId: number) => {
   injectedTabs.delete(tabId);
 });
 
+// ============================================
+// SIGNAL CHECK (Proactive Intelligence - Fase 3 v0)
+// ============================================
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'daily-signal-check') {
+    console.log('Signal: Daily alarm triggered at', new Date().toISOString());
+    try {
+      // Get current user ID from chrome.storage
+      const stored = await chrome.storage.local.get(['sofia-session']);
+      const raw = stored['sofia-session'];
+      const session = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (session?.user?.id) {
+        const { runSignalChecksForUser } = await import('../services/signal-detector');
+        const result = await runSignalChecksForUser(session.user.id);
+        console.log('Signal: Daily check result', result);
+
+        // Notify popup if open
+        if (result.signals_created > 0) {
+          chrome.runtime.sendMessage({
+            type: 'SIGNALS_UPDATED',
+            count: result.signals_created
+          }).catch(() => {});
+        }
+      } else {
+        console.log('Signal: No user session, skipping daily check');
+      }
+    } catch (err) {
+      console.error('Signal: Daily check error', err);
+    }
+  }
+});
+
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
   // Handle ping from content script to confirm it's running
@@ -112,6 +158,21 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       injectedTabs.add(sender.tab.id);
     }
     return true;
+  }
+
+  // ============================================
+  // SIGNAL CHECK (manual trigger from popup)
+  // ============================================
+  if (message.type === 'RUN_SIGNAL_CHECK') {
+    import('../services/signal-detector').then(async ({ runSignalChecksForUser }) => {
+      try {
+        const result = await runSignalChecksForUser(message.userId);
+        sendResponse({ success: true, ...result });
+      } catch (err) {
+        sendResponse({ success: false, error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    });
+    return true; // async response
   }
 
   // ============================================

@@ -10,7 +10,8 @@
     "storage",
     "sidePanel",
     "tabCapture",
-    "offscreen"
+    "offscreen",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"

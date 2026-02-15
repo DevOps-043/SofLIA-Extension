@@ -19,6 +19,7 @@ import {
   IrisStatus,
   IrisProjectUpdate,
   IrisNotification,
+  IrisNotificationPreferences,
   IrisTeamMember,
   IrisAccountUser,
 } from '../lib/iris-client';
@@ -348,6 +349,67 @@ export async function getUnreadNotifications(userId: string): Promise<IrisNotifi
   return data || [];
 }
 
+/** Get notification preferences for a user */
+export async function getNotificationPreferences(userId: string): Promise<IrisNotificationPreferences | null> {
+  if (!irisSupa || !isIrisConfigured()) return null;
+  const { data, error } = await irisSupa
+    .from('user_notification_preferences')
+    .select('soflia_enabled, soflia_issues, soflia_projects, soflia_team_updates, soflia_mentions, soflia_reminders, soflia_signals')
+    .eq('user_id', userId)
+    .single();
+  if (error) { console.error('IRIS: getNotificationPreferences error', error); return null; }
+  return data;
+}
+
+/** Get filtered notifications respecting user preferences */
+export async function getFilteredNotifications(userId: string): Promise<IrisNotification[]> {
+  if (!irisSupa || !isIrisConfigured()) return [];
+
+  // First check preferences
+  const prefs = await getNotificationPreferences(userId);
+  if (!prefs || !prefs.soflia_enabled) return [];
+
+  // Fetch unread notifications
+  const notifications = await getUnreadNotifications(userId);
+
+  // Filter by category preferences
+  return notifications.filter(n => {
+    switch (n.category) {
+      case 'task': return prefs.soflia_issues;
+      case 'project': return prefs.soflia_projects;
+      case 'team': return prefs.soflia_team_updates;
+      case 'comment': return prefs.soflia_mentions;
+      case 'reminder': return prefs.soflia_reminders;
+      case 'signal': return prefs.soflia_signals !== false;
+      case 'system': return true;
+      default: return true;
+    }
+  });
+}
+
+/** Mark a single notification as read */
+export async function markNotificationAsRead(notificationId: string): Promise<boolean> {
+  if (!irisSupa || !isIrisConfigured()) return false;
+  const { error } = await irisSupa
+    .from('notifications')
+    .update({ is_read: true })
+    .eq('notification_id', notificationId);
+  if (error) { console.error('IRIS: markNotificationAsRead error', error); return false; }
+  return true;
+}
+
+/** Mark all notifications as read for a user */
+export async function markAllNotificationsAsRead(userId: string): Promise<boolean> {
+  if (!irisSupa || !isIrisConfigured()) return false;
+  const { error } = await irisSupa
+    .from('notifications')
+    .update({ is_read: true })
+    .eq('recipient_id', userId)
+    .eq('is_read', false);
+  if (error) { console.error('IRIS: markAllNotificationsAsRead error', error); return false; }
+  return true;
+}
+
 // ==========================================
 // USERS (Account Users)
 // ==========================================
@@ -378,12 +440,43 @@ export async function searchUsers(query: string): Promise<IrisAccountUser[]> {
 }
 
 // ==========================================
+// KEYWORD DETECTION
+// ==========================================
+
+const IRIS_KEYWORDS = [
+  'proyecto', 'proyectos', 'project', 'projects',
+  'issue', 'issues', 'tarea', 'tareas', 'task', 'tasks',
+  'equipo', 'equipos', 'team', 'teams',
+  'sprint', 'ciclo', 'cycle',
+  'milestone', 'hito',
+  'pendiente', 'pendientes',
+  'estado de', 'status',
+  'prioridad', 'priority',
+  'asignar', 'assignee',
+  'checklist',
+  'backlog', 'kanban',
+  'project hub', 'iris',
+  'crear proyecto', 'crear tarea', 'create project', 'create task',
+  'actualizar', 'update',
+  'miembros', 'members',
+  'informe', 'reporte', 'report',
+  'mis tareas', 'my tasks',
+  'avance', 'progreso', 'progress',
+];
+
+/** Check if a user message likely needs IRIS data */
+export function needsIrisData(message: string): boolean {
+  const lower = message.toLowerCase();
+  return IRIS_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ==========================================
 // CONTEXT BUILDER (for Gemini prompt injection)
 // ==========================================
 
 /**
  * Builds a context summary of the user's IRIS data for Gemini.
- * Fetches teams, recent projects, and recent issues to inject as context.
+ * Fetches teams, projects, issues, statuses, priorities, and cycles.
  */
 export async function buildIrisContext(_userId?: string): Promise<string> {
   if (!irisSupa || !isIrisConfigured()) {
@@ -392,50 +485,228 @@ export async function buildIrisContext(_userId?: string): Promise<string> {
 
   try {
     const parts: string[] = [];
-    parts.push('📋 DATOS DE IRIS (Gestión de Proyectos):');
+    parts.push('=== DATOS DE IRIS (Project Hub) ===');
+    if (_userId) {
+      parts.push(`\n## Usuario actual: ID: ${_userId}`);
+    }
 
     // Fetch teams
     const teams = await getTeams();
     if (teams.length > 0) {
       parts.push('\n## Equipos:');
       for (const team of teams.slice(0, 5)) {
-        parts.push(`- **${team.name}** (${team.slug}) | Estado: ${team.status} | ID: ${team.team_id}`);
+        parts.push(`- ${team.name} (${team.slug}) | Estado: ${team.status} | ID: ${team.team_id}`);
       }
     }
 
-    // Fetch recent projects (across all teams)
-    const projects = await getProjects();
-    if (projects.length > 0) {
-      parts.push('\n## Proyectos recientes:');
-      for (const proj of projects.slice(0, 8)) {
-        const statusEmoji = proj.project_status === 'active' ? '🟢' :
-          proj.project_status === 'completed' ? '✅' :
-          proj.project_status === 'on_hold' ? '🟡' :
-          proj.project_status === 'planning' ? '📝' : '⚪';
-        parts.push(`- ${statusEmoji} **${proj.project_name}** [${proj.project_key}] | Estado: ${proj.project_status} | Progreso: ${proj.completion_percentage}% | Prioridad: ${proj.priority_level} | ID: ${proj.project_id}`);
-      }
-    }
-
-    // Fetch recent issues across teams (limit to most recent)
+    // Fetch statuses and priorities (needed for Gemini to reference valid IDs in actions)
     if (teams.length > 0) {
-      const issues = await getIssues({ teamId: teams[0].team_id, limit: 10 });
-      if (issues.length > 0) {
-        parts.push(`\n## Issues recientes (equipo: ${teams[0].name}):`);
-        for (const issue of issues) {
-          const statusName = issue.status?.name || 'Sin estado';
-          const priorityName = issue.priority?.name || 'Sin prioridad';
-          parts.push(`- #${issue.issue_number} **${issue.title}** | Estado: ${statusName} | Prioridad: ${priorityName} | ID: ${issue.issue_id}`);
+      const statuses = await getStatuses(teams[0].team_id);
+      if (statuses.length > 0) {
+        parts.push(`\n## Estados disponibles (equipo: ${teams[0].name}):`);
+        for (const s of statuses) {
+          parts.push(`- ${s.name} | Tipo: ${s.status_type || 'N/A'} | ID: ${s.status_id}`);
         }
       }
     }
 
-    if (parts.length <= 1) {
-      return '📋 IRIS: No hay datos disponibles o IRIS no está configurado.';
+    const priorities = await getPriorities();
+    if (priorities.length > 0) {
+      parts.push('\n## Prioridades disponibles:');
+      for (const p of priorities) {
+        parts.push(`- ${p.name} | Nivel: ${p.level} | ID: ${p.priority_id}`);
+      }
     }
 
+    // Fetch projects
+    const projects = await getProjects();
+    if (projects.length > 0) {
+      parts.push('\n## Proyectos:');
+      for (const proj of projects.slice(0, 10)) {
+        parts.push(`- ${proj.project_name} [${proj.project_key}] | Estado: ${proj.project_status} | Progreso: ${proj.completion_percentage}% | Prioridad: ${proj.priority_level} | Team: ${proj.team_id} | ID: ${proj.project_id}`);
+      }
+    }
+
+    // Fetch issues from all teams
+    if (teams.length > 0) {
+      let totalIssues = 0;
+      for (const team of teams.slice(0, 3)) {
+        if (totalIssues >= 50) break;
+        const limit = Math.min(20, 50 - totalIssues);
+        const issues = await getIssues({ teamId: team.team_id, limit });
+        if (issues.length > 0) {
+          parts.push(`\n## Issues (equipo: ${team.name}):`);
+          for (const issue of issues) {
+            const statusName = (issue as any).status?.name || 'Sin estado';
+            const priorityName = (issue as any).priority?.name || 'Sin prioridad';
+            const assignee = issue.assignee_id ? `Asignado: ${issue.assignee_id}` : 'Sin asignar';
+            parts.push(`- #${issue.issue_number} ${issue.title} | Estado: ${statusName} | Prioridad: ${priorityName} | ${assignee} | Proyecto: ${issue.project_id || 'N/A'} | ID: ${issue.issue_id}`);
+            totalIssues++;
+          }
+        }
+      }
+    }
+
+    // Fetch active cycles
+    if (teams.length > 0) {
+      const cycles = await getCycles(teams[0].team_id);
+      const activeCycles = cycles.filter(c => {
+        const now = new Date();
+        const start = c.start_date ? new Date(c.start_date) : null;
+        const end = c.end_date ? new Date(c.end_date) : null;
+        return start && end && start <= now && end >= now;
+      });
+      if (activeCycles.length > 0) {
+        parts.push(`\n## Ciclos activos (equipo: ${teams[0].name}):`);
+        for (const c of activeCycles) {
+          parts.push(`- ${c.name} | ${c.start_date} - ${c.end_date} | ID: ${c.cycle_id}`);
+        }
+      }
+    }
+
+    // Inject active signals (Proactive Intelligence)
+    if (_userId) {
+      try {
+        const { getActiveSignals } = await import('./signal-detector');
+        const signals = await getActiveSignals(_userId);
+        if (signals.length > 0) {
+          parts.push('\n## 🚨 Señales Activas (Proactive Intelligence):');
+          for (const signal of signals) {
+            const meta = signal.metadata;
+            if (!meta) continue;
+            const sevLabel = meta.severity === 'red' ? '🔴 RED' : '🟡 AMBER';
+            parts.push(`- [${sevLabel}] ${signal.title}`);
+            parts.push(`  Tipo: ${meta.signal_type} | Confianza: ${Math.floor(meta.confidence * 100)}%`);
+            parts.push(`  Evidencia: ${JSON.stringify(meta.evidence)}`);
+            parts.push(`  Acciones recomendadas: ${meta.recommended_actions?.join(', ') || 'N/A'}`);
+          }
+        }
+      } catch (e) {
+        console.warn('IRIS: Could not load active signals for context', e);
+      }
+    }
+
+    if (parts.length <= 1) {
+      return '=== IRIS: No hay datos disponibles o IRIS no esta configurado. ===';
+    }
+
+    parts.push('\n=== FIN DATOS IRIS ===');
     return parts.join('\n');
   } catch (err) {
     console.error('IRIS: Error building context', err);
     return '';
+  }
+}
+
+// ==========================================
+// ACTION EXECUTOR
+// ==========================================
+
+export interface IrisActionRequest {
+  type: string;
+  id?: string;
+  data?: Record<string, any>;
+}
+
+export interface IrisActionResult {
+  success: boolean;
+  data?: any;
+  error?: string;
+}
+
+/** Get the next issue_number for a team */
+async function getNextIssueNumber(teamId: string): Promise<number> {
+  if (!irisSupa) return 1;
+  const { data } = await irisSupa
+    .from('task_issues')
+    .select('issue_number')
+    .eq('team_id', teamId)
+    .order('issue_number', { ascending: false })
+    .limit(1);
+  return (data && data.length > 0) ? data[0].issue_number + 1 : 1;
+}
+
+/** Execute an IRIS action (create/update project, issue, etc.) */
+export async function executeIrisAction(action: IrisActionRequest, userId?: string): Promise<IrisActionResult> {
+  try {
+    switch (action.type) {
+      case 'create_project': {
+        const data = { ...action.data };
+        // Inject required created_by_user_id if not present
+        if (!data.created_by_user_id && userId) {
+          data.created_by_user_id = userId;
+        }
+        // Also set lead_user_id if user asked to be leader
+        if (!data.lead_user_id && userId) {
+          data.lead_user_id = userId;
+        }
+        const result = await createProject(data);
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo crear el proyecto' };
+      }
+      case 'update_project': {
+        if (!action.id) return { success: false, error: 'Se requiere ID del proyecto' };
+        const result = await updateProject(action.id, action.data || {});
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo actualizar el proyecto' };
+      }
+      case 'create_issue': {
+        const data = { ...action.data };
+        // Inject required creator_id if not present
+        if (!data.creator_id && userId) {
+          data.creator_id = userId;
+        }
+        // Generate issue_number if not present
+        if (!data.issue_number && data.team_id) {
+          data.issue_number = await getNextIssueNumber(data.team_id);
+        }
+        const result = await createIssue(data);
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo crear la issue' };
+      }
+      case 'update_issue': {
+        if (!action.id) return { success: false, error: 'Se requiere ID de la issue' };
+        const result = await updateIssue(action.id, action.data || {});
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo actualizar la issue' };
+      }
+      case 'add_comment': {
+        const data = { ...action.data };
+        // Inject required author_id if not present
+        if (!data.author_id && userId) {
+          data.author_id = userId;
+        }
+        // Map comment_text to body if needed
+        if (data.comment_text && !data.body) {
+          data.body = data.comment_text;
+          delete data.comment_text;
+        }
+        const result = await addIssueComment(data);
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo agregar el comentario' };
+      }
+      case 'create_cycle': {
+        const result = await createCycle(action.data || {});
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo crear el ciclo' };
+      }
+      case 'create_milestone': {
+        const result = await createMilestone(action.data || {});
+        return result
+          ? { success: true, data: result }
+          : { success: false, error: 'No se pudo crear el milestone' };
+      }
+      default:
+        return { success: false, error: `Accion desconocida: ${action.type}` };
+    }
+  } catch (err) {
+    console.error('IRIS: executeIrisAction error', err);
+    return { success: false, error: err instanceof Error ? err.message : 'Error desconocido' };
   }
 }

@@ -280,9 +280,20 @@ export interface IrisNotification {
   category?: string;
   entity_id?: string;
   link?: string;
+  metadata?: Record<string, any>;
   is_read: boolean;
   read_at?: string;
   created_at: string;
+}
+
+export interface IrisNotificationPreferences {
+  soflia_enabled: boolean;
+  soflia_issues: boolean;
+  soflia_projects: boolean;
+  soflia_team_updates: boolean;
+  soflia_mentions: boolean;
+  soflia_reminders: boolean;
+  soflia_signals?: boolean;
 }
 
 export interface IrisAccountUser {

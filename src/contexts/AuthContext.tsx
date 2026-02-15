@@ -3,6 +3,7 @@ import type { Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { isSofiaConfigured } from '../lib/sofia-client';
 import { sofiaAuth, SofiaContext, SofiaAuthResult, SofiaAuthUser } from '../services/sofia-auth';
+import { syncUserOrganizations } from '../services/org-data';
 
 // Tipo de usuario flexible que funciona con Supabase Auth y SOFIA custom auth
 type AuthUser = SofiaAuthUser | null;
@@ -73,6 +74,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
                   teams: profile.teams || [],
                   memberships: profile.memberships || []
                 });
+
+                // Sync org memberships to LIA for RLS shared folder access
+                if (profile.memberships?.length && liaSession.user.id) {
+                  syncUserOrganizations(liaSession.user.id, profile.memberships).catch(err =>
+                    console.warn('Failed to sync org memberships:', err)
+                  );
+                }
               }
             } else {
               // SOFIA existe pero Lia no - forzar re-login para sincronizar
@@ -123,6 +131,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
                 teams: profile.teams || [],
                 memberships: profile.memberships || []
               });
+
+              // Sync org memberships on auth state change
+              if (profile.memberships?.length && session.user.id) {
+                syncUserOrganizations(session.user.id, profile.memberships).catch(err =>
+                  console.warn('Failed to sync org memberships on state change:', err)
+                );
+              }
             }
           } else {
             setSofiaContext(null);
@@ -239,6 +254,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           teams: result.sofiaProfile.teams || [],
           memberships: result.sofiaProfile.memberships || []
         });
+
+        // Sync org memberships to LIA for RLS shared folder access
+        // Use the LIA user ID (from session) not the SOFIA user ID
+        const liaUserId = session?.user?.id || user?.id;
+        if (result.sofiaProfile.memberships?.length && liaUserId) {
+          syncUserOrganizations(liaUserId, result.sofiaProfile.memberships).catch(err =>
+            console.warn('Failed to sync org memberships on login:', err)
+          );
+        }
       }
     }
 

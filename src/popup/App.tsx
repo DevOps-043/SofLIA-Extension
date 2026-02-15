@@ -15,6 +15,11 @@ import { ToolEditorModal } from '../components/ToolEditorModal';
 import { ToolGeneratorModal } from '../components/ToolGeneratorModal';
 import { ProjectSuggestionModal } from '../components/ProjectSuggestionModal';
 import type { Tool, UserTool } from '../services/tools';
+import { isIrisConfigured } from '../lib/iris-client';
+import type { IrisTeam, IrisProject, IrisIssue, IrisNotification } from '../lib/iris-client';
+import { getTeams, getProjects, getIssues, getFilteredNotifications, markNotificationAsRead, markAllNotificationsAsRead } from '../services/iris-data';
+import { getSharedFolders, createSharedFolder, shareExistingFolder, unshareFolder } from '../services/org-data';
+import type { SharedFolder } from '../services/org-data';
 
 interface GroundingSource {
   uri: string;
@@ -70,7 +75,12 @@ interface UserSettings {
 
 function App() {
   // Auth
-  const { loading: authLoading, signOut, user } = useAuth();
+  const { loading: authLoading, signOut, user, sofiaContext } = useAuth();
+
+  // Organization context
+  const currentOrg = sofiaContext?.currentOrganization || null;
+  const userOrgRole = sofiaContext?.memberships?.find(m => m.organization_id === currentOrg?.id)?.role || null;
+  const isAdmin = userOrgRole === 'owner' || userOrgRole === 'admin';
 
   // Loading screen while checking auth
   if (authLoading) {
@@ -191,6 +201,7 @@ function App() {
   const liveClientRef = useRef<LiveClient | null>(null);
   const audioCapturRef = useRef<AudioCapture | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const dismissedSuggestionChats = useRef<Set<string>>(new Set());
 
   // Model States
   const [preferredPrimaryModel, setPreferredPrimaryModel] = useState<string>('gemini-3-flash-preview');
@@ -305,6 +316,28 @@ function App() {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
 
+  // IRIS Proyectos State (Sidebar)
+  const [irisConfigured, setIrisConfigured] = useState(false);
+  const [irisTeams, setIrisTeams] = useState<IrisTeam[]>([]);
+  const [irisProjects, setIrisProjects] = useState<Record<string, IrisProject[]>>({});
+  const [irisIssues, setIrisIssues] = useState<Record<string, IrisIssue[]>>({});
+  const [irisLoading, setIrisLoading] = useState(false);
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set());
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+
+  // Notifications State
+  const [notifications, setNotifications] = useState<IrisNotification[]>([]);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'signals'>('all');
+  const [signalCheckLoading, setSignalCheckLoading] = useState(false);
+
+  // Organization Shared Folders State
+  const [sharedFolders, setSharedFolders] = useState<SharedFolder[]>([]);
+  const [expandedSharedFolders, setExpandedSharedFolders] = useState<Set<string>>(new Set());
+  const [isSharedFolderModalOpen, setIsSharedFolderModalOpen] = useState(false);
+  const [newSharedFolderName, setNewSharedFolderName] = useState('');
+  const [sharedFolderChats, setSharedFolderChats] = useState<Record<string, ChatSession[]>>({});
+
   // Project Suggestion State
   const [suggestionData, setSuggestionData] = useState<{
     isOpen: boolean;
@@ -408,13 +441,13 @@ function App() {
   useEffect(() => {
     // Requirements: Active chat, not in folder, sufficient content
     if (currentFolderId || !currentChatId || messages.length < 4 || !user) return;
-    
+
     // Only analyze after model response
     const lastMsg = messages[messages.length - 1];
     if (lastMsg.role !== 'model') return;
 
-    // Prevent annoyance: Don't show if already showing
-    if (suggestionData?.isOpen) return;
+    // Prevent annoyance: Don't show if already dismissed for this chat
+    if (dismissedSuggestionChats.current.has(currentChatId)) return;
 
     const timer = setTimeout(() => {
         const chatContent = messages.map(m => m.text).join(' ').toLowerCase();
@@ -509,7 +542,7 @@ function App() {
     }, 2000); // Wait 2s after response to be less intrusive
 
     return () => clearTimeout(timer);
-  }, [messages, currentFolderId, currentChatId, folders, chatHistory, suggestionData]);
+  }, [messages, currentFolderId, currentChatId, folders, chatHistory]);
 
   // Settings & Feedback Modals
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -626,6 +659,134 @@ function App() {
       console.error('Error loading folders:', err);
     }
   }, [user?.id]);
+
+  // Load IRIS teams for sidebar
+  const loadIrisTeams = useCallback(async () => {
+    if (!isIrisConfigured()) {
+      setIrisConfigured(false);
+      return;
+    }
+    setIrisConfigured(true);
+    setIrisLoading(true);
+    try {
+      const teams = await getTeams();
+      setIrisTeams(teams);
+    } catch (err) {
+      console.error('Error loading IRIS teams:', err);
+    } finally {
+      setIrisLoading(false);
+    }
+  }, []);
+
+  // Load notifications from IRIS
+  const loadNotifications = useCallback(async () => {
+    if (!user?.id || !isIrisConfigured()) return;
+    try {
+      const notifs = await getFilteredNotifications(user.id);
+      setNotifications(notifs);
+    } catch (err) {
+      console.error('Error loading notifications:', err);
+    }
+  }, [user?.id]);
+
+  // Load shared folders for current organization
+  const loadSharedFolders = useCallback(async () => {
+    if (!currentOrg?.id || !user?.id) {
+      setSharedFolders([]);
+      return;
+    }
+    try {
+      const folders = await getSharedFolders(currentOrg.id);
+      setSharedFolders(folders);
+    } catch (err) {
+      console.error('Error loading shared folders:', err);
+    }
+  }, [currentOrg?.id, user?.id]);
+
+  // Toggle shared folder expand and load chats
+  const handleToggleSharedFolder = useCallback(async (folderId: string) => {
+    const newExpanded = new Set(expandedSharedFolders);
+    if (newExpanded.has(folderId)) {
+      newExpanded.delete(folderId);
+    } else {
+      newExpanded.add(folderId);
+      // Load conversations in this shared folder if not cached
+      if (!sharedFolderChats[folderId]) {
+        try {
+          const { data: conversations } = await supabase
+            .from('conversations')
+            .select('*')
+            .eq('folder_id', folderId)
+            .order('updated_at', { ascending: false });
+
+          if (conversations) {
+            const sessions: ChatSession[] = await Promise.all(
+              conversations.map(async (conv: any) => {
+                const { data: msgs } = await supabase
+                  .from('messages')
+                  .select('*')
+                  .eq('conversation_id', conv.id)
+                  .order('created_at', { ascending: true });
+
+                const formattedMessages: Message[] = (msgs || []).map((m: any) => ({
+                  id: m.id,
+                  role: m.role as 'user' | 'model',
+                  text: m.content,
+                  timestamp: new Date(m.created_at).getTime(),
+                  sources: m.metadata?.sources,
+                  places: m.metadata?.places,
+                  images: m.metadata?.images
+                }));
+
+                return {
+                  id: conv.id,
+                  title: conv.title,
+                  messages: formattedMessages,
+                  createdAt: new Date(conv.created_at).getTime(),
+                  updatedAt: new Date(conv.updated_at).getTime(),
+                  folderId: conv.folder_id
+                } as ChatSession;
+              })
+            );
+            setSharedFolderChats(prev => ({ ...prev, [folderId]: sessions }));
+          }
+        } catch (err) {
+          console.error('Error loading shared folder chats:', err);
+        }
+      }
+    }
+    setExpandedSharedFolders(newExpanded);
+  }, [expandedSharedFolders, sharedFolderChats]);
+
+  // Handle creating a shared folder
+  const handleCreateSharedFolder = useCallback(async () => {
+    if (!user?.id || !currentOrg?.id || !newSharedFolderName.trim()) return;
+    const folder = await createSharedFolder(user.id, currentOrg.id, newSharedFolderName.trim());
+    if (folder) {
+      setSharedFolders(prev => [...prev, folder]);
+      setNewSharedFolderName('');
+      setIsSharedFolderModalOpen(false);
+    }
+  }, [user?.id, currentOrg?.id, newSharedFolderName]);
+
+  // Handle sharing an existing personal folder
+  const handleShareFolder = useCallback(async (folderId: string) => {
+    if (!currentOrg?.id || !sofiaContext?.user?.id) return;
+    const success = await shareExistingFolder(folderId, currentOrg.id, sofiaContext.user.id);
+    if (success) {
+      await loadFolders();
+      await loadSharedFolders();
+    }
+  }, [currentOrg?.id, sofiaContext?.user?.id]);
+
+  // Handle unsharing a folder
+  const handleUnshareFolder = useCallback(async (folderId: string) => {
+    const success = await unshareFolder(folderId);
+    if (success) {
+      await loadFolders();
+      await loadSharedFolders();
+    }
+  }, []);
 
   // Load chat history
   const loadChatHistory = useCallback(async () => {
@@ -936,14 +1097,99 @@ function App() {
     return new Date(timestamp).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
   };
 
+  // IRIS: Toggle team expansion + lazy load projects
+  const handleToggleTeam = useCallback(async (teamId: string) => {
+    const newExpanded = new Set(expandedTeams);
+    if (newExpanded.has(teamId)) {
+      newExpanded.delete(teamId);
+    } else {
+      newExpanded.add(teamId);
+      if (!irisProjects[teamId]) {
+        try {
+          const projects = await getProjects(teamId);
+          setIrisProjects(prev => ({ ...prev, [teamId]: projects }));
+        } catch (err) {
+          console.error('Error loading IRIS projects:', err);
+        }
+      }
+    }
+    setExpandedTeams(newExpanded);
+  }, [expandedTeams, irisProjects]);
+
+  // IRIS: Toggle project expansion + lazy load issues
+  const handleToggleProject = useCallback(async (projectId: string) => {
+    const newExpanded = new Set(expandedProjects);
+    if (newExpanded.has(projectId)) {
+      newExpanded.delete(projectId);
+    } else {
+      newExpanded.add(projectId);
+      if (!irisIssues[projectId]) {
+        try {
+          const issues = await getIssues({ projectId, limit: 20 });
+          setIrisIssues(prev => ({ ...prev, [projectId]: issues }));
+        } catch (err) {
+          console.error('Error loading IRIS issues:', err);
+        }
+      }
+    }
+    setExpandedProjects(newExpanded);
+  }, [expandedProjects, irisIssues]);
+
+  // IRIS: Status color helpers
+  const getProjectStatusColor = (status: string): string => {
+    switch (status) {
+      case 'active': return '#22c55e';
+      case 'completed': return '#3b82f6';
+      case 'on_hold': return '#f59e0b';
+      case 'planning': return '#8b5cf6';
+      case 'cancelled': return '#ef4444';
+      case 'archived': return '#6b7280';
+      default: return '#6b7280';
+    }
+  };
+
+  const getProjectStatusLabel = (status: string): string => {
+    switch (status) {
+      case 'active': return 'Activo';
+      case 'completed': return 'Completado';
+      case 'on_hold': return 'En pausa';
+      case 'planning': return 'Planificación';
+      case 'cancelled': return 'Cancelado';
+      case 'archived': return 'Archivado';
+      default: return status;
+    }
+  };
+
+  const getIssueStatusColor = (statusType?: string): string => {
+    switch (statusType) {
+      case 'done': return '#22c55e';
+      case 'in_progress': return '#3b82f6';
+      case 'in_review': return '#8b5cf6';
+      case 'todo': return '#f59e0b';
+      case 'backlog': return '#6b7280';
+      case 'cancelled': return '#ef4444';
+      default: return '#6b7280';
+    }
+  };
+
   // Load data on mount
   useEffect(() => {
     if (user?.id) {
       loadUserSettings();
       loadFolders();
       loadChatHistory();
+      loadIrisTeams();
+      loadNotifications();
+      loadSharedFolders();
     }
-  }, [user?.id, loadUserSettings, loadFolders, loadChatHistory]);
+  }, [user?.id, loadUserSettings, loadFolders, loadChatHistory, loadIrisTeams, loadNotifications, loadSharedFolders]);
+
+  // Poll notifications every 60 seconds
+  useEffect(() => {
+    if (!user?.id || !isIrisConfigured()) return;
+    const interval = setInterval(loadNotifications, 60000);
+    return () => clearInterval(interval);
+  }, [user?.id, loadNotifications]);
 
   // Auto-save chat (debounced)
   useEffect(() => {
@@ -1012,6 +1258,9 @@ function App() {
     const handleMessage = (message: any) => {
       if (message.type === 'PENDING_SELECTION_AVAILABLE') {
         checkPendingSelection();
+      }
+      if (message.type === 'SIGNALS_UPDATED') {
+        loadNotifications();
       }
     };
     chrome.runtime.onMessage.addListener(handleMessage);
@@ -2064,12 +2313,28 @@ function App() {
           text: m.text
         }));
 
+      // Inject IRIS Project Hub context if the message is project-related
+      let irisContext: string | undefined;
+      try {
+        const { needsIrisData, buildIrisContext } = await import('../services/iris-data');
+        if (needsIrisData(apiMessage)) {
+          console.log('IRIS: Fetching project context...');
+          const ctx = await buildIrisContext(user?.id);
+          if (ctx) {
+            irisContext = ctx;
+            console.log('IRIS: Context injected', ctx.length, 'chars');
+          }
+        }
+      } catch (e) {
+        console.warn('IRIS: Could not load context', e);
+      }
+
       const result = await import('../services/gemini').then(m => m.sendMessageStream(
         apiMessage,
         pageContext,
         { primary: preferredPrimaryModel },
         undefined, // personalization
-        undefined, // projectContext
+        irisContext || undefined, // projectContext → IRIS data
         { mode: thinkingMode as 'off' | 'minimal' | 'low' | 'medium' | 'high', type: thinkingType },
         imagesToUse.length > 0 ? imagesToUse : undefined, // images
         activeTool?.system_prompt, // toolPrompt
@@ -2148,6 +2413,34 @@ function App() {
         }
       }
 
+      // Execute IRIS actions if present in the response
+      try {
+        const { hasIrisActions, parseIrisActions, cleanIrisActionMarkers, executeAllIrisActions } = await import('../services/iris-actions');
+        if (hasIrisActions(fullText)) {
+          console.log('IRIS: Actions detected in response, executing...');
+          const actions = parseIrisActions(fullText);
+          const results = await executeAllIrisActions(actions, user?.id);
+          const cleanText = cleanIrisActionMarkers(fullText);
+
+          let resultSummary = '';
+          for (const r of results) {
+            resultSummary += r.success
+              ? '\n\n> Accion ejecutada exitosamente en IRIS'
+              : `\n\n> Error ejecutando accion: ${r.error}`;
+          }
+
+          fullText = cleanText + resultSummary;
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === aiMessageId
+                ? { ...msg, text: fullText }
+                : msg
+            )
+          );
+        }
+      } catch (e) {
+        console.warn('IRIS Actions: Error processing actions', e);
+      }
 
     } catch (error) {
       console.error('Error:', error);
@@ -2172,6 +2465,28 @@ function App() {
   };
 
   const hasInput = inputValue.trim().length > 0 || selectedImages.length > 0;
+
+  // IRIS: Click on project → start chat with context
+  const handleIrisProjectClick = (project: IrisProject) => {
+    setMessages([]);
+    setCurrentChatId(null);
+    setCurrentFolderId(null);
+    setIsSidebarOpen(false);
+    const prompt = `Dame un resumen del estado actual del proyecto "${project.project_name}" [${project.project_key}]. Estado: ${project.project_status}, Progreso: ${project.completion_percentage}%. Incluye las tareas pendientes, el progreso general y cualquier bloqueo.`;
+    setTimeout(() => handleSendMessage(prompt, null, false), 100);
+  };
+
+  // IRIS: Click on issue → start chat with context
+  const handleIrisIssueClick = (issue: IrisIssue) => {
+    setMessages([]);
+    setCurrentChatId(null);
+    setCurrentFolderId(null);
+    setIsSidebarOpen(false);
+    const statusName = issue.status?.name || 'Sin estado';
+    const priorityName = issue.priority?.name || 'Sin prioridad';
+    const prompt = `Dame detalles sobre la tarea #${issue.issue_number} "${issue.title}". Estado actual: ${statusName}, Prioridad: ${priorityName}. Sugiéreme los próximos pasos y si hay algo que deba revisar.`;
+    setTimeout(() => handleSendMessage(prompt, null, false), 100);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: 'var(--bg-dark-main)' }}>
@@ -2461,10 +2776,292 @@ function App() {
             </svg>
           </button>
 
+          {/* Notifications bell */}
+          {irisConfigured && (
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => { setNotifPanelOpen(!notifPanelOpen); setIsSettingsMenuOpen(false); }}
+                style={{
+                  background: notifPanelOpen ? 'var(--bg-dark-tertiary)' : 'var(--bg-dark-secondary)',
+                  border: `1px solid ${notifPanelOpen ? 'var(--color-accent)' : 'transparent'}`,
+                  borderRadius: '6px',
+                  padding: '6px',
+                  cursor: 'pointer',
+                  color: notifPanelOpen ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  position: 'relative'
+                }}
+                title="Notificaciones"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                {notifications.length > 0 && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '-4px',
+                    right: '-4px',
+                    background: '#ef4444',
+                    borderRadius: '50%',
+                    width: '16px',
+                    height: '16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '9px',
+                    fontWeight: 700,
+                    color: 'white',
+                    lineHeight: 1
+                  }}>
+                    {notifications.length > 9 ? '9+' : notifications.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Notifications Dropdown */}
+              {notifPanelOpen && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: '0',
+                  marginTop: '6px',
+                  background: 'var(--bg-modal)',
+                  border: '1px solid var(--border-modal)',
+                  borderRadius: '10px',
+                  width: '300px',
+                  maxHeight: '400px',
+                  overflowY: 'auto',
+                  zIndex: 10000,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                }}>
+                  {/* Header */}
+                  <div style={{
+                    padding: '12px 14px',
+                    borderBottom: '1px solid var(--border-modal)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-white)' }}>
+                      Notificaciones
+                    </span>
+                    {notifications.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          if (user?.id) {
+                            await markAllNotificationsAsRead(user.id);
+                            setNotifications([]);
+                          }
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: 'var(--color-accent)',
+                          fontSize: '11px',
+                          padding: '2px 6px'
+                        }}
+                      >
+                        Marcar todas
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Filter tabs: All | Signals */}
+                  <div style={{
+                    display: 'flex',
+                    gap: '0',
+                    borderBottom: '1px solid var(--border-modal)',
+                    padding: '0 14px'
+                  }}>
+                    {(['all', 'signals'] as const).map(filter => (
+                      <button
+                        key={filter}
+                        onClick={() => setNotifFilter(filter)}
+                        style={{
+                          flex: 1,
+                          background: 'none',
+                          border: 'none',
+                          borderBottom: notifFilter === filter ? '2px solid var(--color-accent)' : '2px solid transparent',
+                          padding: '8px 4px',
+                          cursor: 'pointer',
+                          color: notifFilter === filter ? 'var(--color-accent)' : 'var(--color-gray-medium)',
+                          fontSize: '11px',
+                          fontWeight: notifFilter === filter ? 600 : 400,
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        {filter === 'all' ? 'Todas' : `Señales ${notifications.filter(n => n.category === 'signal').length > 0 ? `(${notifications.filter(n => n.category === 'signal').length})` : ''}`}
+                      </button>
+                    ))}
+                    {/* Manual signal check button */}
+                    <button
+                      onClick={async () => {
+                        if (user?.id && !signalCheckLoading) {
+                          setSignalCheckLoading(true);
+                          try {
+                            await chrome.runtime.sendMessage({ type: 'RUN_SIGNAL_CHECK', userId: user.id });
+                            await loadNotifications();
+                          } catch (e) { console.error('Signal check error', e); }
+                          setSignalCheckLoading(false);
+                        }
+                      }}
+                      disabled={signalCheckLoading}
+                      title="Verificar señales ahora"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: '8px 6px',
+                        cursor: signalCheckLoading ? 'wait' : 'pointer',
+                        color: 'var(--color-gray-medium)',
+                        fontSize: '12px',
+                        opacity: signalCheckLoading ? 0.5 : 1,
+                        transition: 'opacity 0.2s'
+                      }}
+                    >
+                      {signalCheckLoading ? '...' : '⟳'}
+                    </button>
+                  </div>
+
+                  {/* Notification List */}
+                  {(() => {
+                    const filtered = notifFilter === 'signals'
+                      ? notifications.filter(n => n.category === 'signal')
+                      : notifications;
+                    return filtered.length === 0 ? (
+                    <div style={{
+                      padding: '24px 14px',
+                      textAlign: 'center',
+                      color: 'var(--color-gray-medium)',
+                      fontSize: '12px'
+                    }}>
+                      {notifFilter === 'signals' ? 'No hay señales activas' : 'No hay notificaciones'}
+                    </div>
+                  ) : (
+                    filtered.map(notif => (
+                      <div
+                        key={notif.notification_id}
+                        onClick={async () => {
+                          await markNotificationAsRead(notif.notification_id);
+                          setNotifications(prev => prev.filter(n => n.notification_id !== notif.notification_id));
+                        }}
+                        style={{
+                          padding: '10px 14px',
+                          borderBottom: '1px solid var(--border-modal)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          gap: '10px',
+                          alignItems: 'flex-start',
+                          transition: 'background 0.2s',
+                          ...(notif.category === 'signal' ? {
+                            borderLeft: `3px solid ${notif.metadata?.severity === 'red' ? '#ef4444' : '#f59e0b'}`
+                          } : {})
+                        }}
+                        onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                        onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                      >
+                        {/* Type indicator dot */}
+                        <div style={{
+                          width: '8px',
+                          height: '8px',
+                          borderRadius: '50%',
+                          marginTop: '4px',
+                          flexShrink: 0,
+                          backgroundColor: notif.category === 'signal'
+                            ? (notif.metadata?.severity === 'red' ? '#ef4444' : '#f59e0b')
+                            : notif.type === 'error' ? '#ef4444'
+                            : notif.type === 'warning' ? '#f59e0b'
+                            : notif.type === 'success' ? '#22c55e'
+                            : '#3b82f6'
+                        }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            color: 'var(--color-white)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {notif.title}
+                          </div>
+                          {notif.message && (
+                            <div style={{
+                              fontSize: '11px',
+                              color: 'var(--color-gray-medium)',
+                              marginTop: '2px',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {notif.message}
+                            </div>
+                          )}
+                          {/* Signal-specific: evidence + actions */}
+                          {notif.category === 'signal' && notif.metadata && (
+                            <div style={{ marginTop: '6px' }}>
+                              <div style={{
+                                fontSize: '10px',
+                                color: 'var(--color-gray-medium)',
+                                background: 'var(--bg-dark-tertiary)',
+                                borderRadius: '4px',
+                                padding: '4px 6px',
+                                marginBottom: '4px'
+                              }}>
+                                Confianza: {Math.floor((notif.metadata.confidence || 0) * 100)}%
+                                {notif.metadata.evidence?.days_since_last_update != null && ` · ${notif.metadata.evidence.days_since_last_update}d sin actualización`}
+                                {notif.metadata.evidence?.blocked_issues_count != null && ` · ${notif.metadata.evidence.blocked_issues_count} bloqueadas`}
+                                {notif.metadata.evidence?.completion_percentage != null && ` · ${notif.metadata.evidence.completion_percentage}% completado`}
+                              </div>
+                              {notif.metadata.recommended_actions && (
+                                <div style={{ fontSize: '10px', color: '#60a5fa' }}>
+                                  {notif.metadata.recommended_actions.slice(0, 2).map((a: string, i: number) => (
+                                    <span key={i}>{i > 0 ? ' · ' : '→ '}{a}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '4px' }}>
+                            <span style={{
+                              fontSize: '9px',
+                              padding: '1px 5px',
+                              borderRadius: '4px',
+                              background: notif.category === 'signal'
+                                ? (notif.metadata?.severity === 'red' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)')
+                                : 'var(--bg-dark-tertiary)',
+                              color: notif.category === 'signal'
+                                ? (notif.metadata?.severity === 'red' ? '#ef4444' : '#f59e0b')
+                                : 'var(--color-gray-medium)',
+                              textTransform: 'uppercase',
+                              fontWeight: 500
+                            }}>
+                              {notif.category === 'signal'
+                                ? (notif.metadata?.signal_type === 'silence_risk' ? 'silencio' : 'retraso')
+                                : (notif.category || 'info')}
+                            </span>
+                            <span style={{ fontSize: '10px', color: 'var(--color-gray-medium)' }}>
+                              {formatRelativeTime(new Date(notif.created_at).getTime())}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  );
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Settings button */}
           <div style={{ position: 'relative' }}>
             <button
-              onClick={() => setIsSettingsMenuOpen(!isSettingsMenuOpen)}
+              onClick={() => { setIsSettingsMenuOpen(!isSettingsMenuOpen); setNotifPanelOpen(false); }}
               style={{
                 background: isSettingsMenuOpen ? 'var(--bg-dark-tertiary)' : 'var(--bg-dark-secondary)',
                 border: `1px solid ${isSettingsMenuOpen ? 'var(--color-accent)' : 'transparent'}`,
@@ -4104,8 +4701,31 @@ function App() {
           justifyContent: 'space-between'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <img src={liaAvatar} alt="Soflia" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
-            <span style={{ fontWeight: 600, color: 'var(--color-white)', fontSize: '15px' }}>Soflia</span>
+            {currentOrg?.logo_url ? (
+              <img
+                src={currentOrg.logo_url}
+                alt={currentOrg.name}
+                style={{ width: '32px', height: '32px', borderRadius: '8px', objectFit: 'cover' }}
+              />
+            ) : (
+              <img src={liaAvatar} alt="Soflia" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ fontWeight: 600, color: 'var(--color-white)', fontSize: '15px' }}>Soflia</span>
+              {currentOrg && (
+                <span style={{
+                  fontSize: '10px',
+                  color: currentOrg.brand_color_primary || 'var(--color-gray-medium)',
+                  lineHeight: 1.2,
+                  maxWidth: '150px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}>
+                  {currentOrg.name}
+                </span>
+              )}
+            </div>
           </div>
           <button
             onClick={() => setIsSidebarOpen(false)}
@@ -4152,6 +4772,8 @@ function App() {
           </button>
         </div>
 
+        {/* Scrollable middle: Carpetas + Proyectos + Historial */}
+        <div style={{ flex: 1, overflowY: 'auto' }}>
         {/* Folders Section */}
         <div style={{ padding: '0 16px', marginBottom: '8px' }}>
           <div style={{
@@ -4229,7 +4851,27 @@ function App() {
                   </svg>
                   <span>{folder.name}</span>
                 </div>
-                
+
+                {/* Share folder button (admin only, when org active and folder not already shared) */}
+                {isAdmin && currentOrg && !(folder as any).is_shared && (
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleShareFolder(folder.id);
+                    }}
+                    style={{ padding: '4px', cursor: 'pointer', color: 'var(--color-gray-medium)', display: 'flex', alignItems: 'center' }}
+                    title={`Compartir con ${currentOrg.name}`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3"/>
+                      <circle cx="6" cy="12" r="3"/>
+                      <circle cx="18" cy="19" r="3"/>
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                    </svg>
+                  </div>
+                )}
+
                 <div
                    onClick={(e) => {
                      e.stopPropagation();
@@ -4285,8 +4927,414 @@ function App() {
           ))}
         </div>
 
+        {/* COMPARTIDO Section (Organization Shared Folders) */}
+        {currentOrg && (
+          <div style={{ padding: '0 16px', marginBottom: '8px' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '8px'
+            }}>
+              <span style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: currentOrg.brand_color_primary || 'var(--color-accent)',
+                textTransform: 'uppercase',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                Compartido
+              </span>
+              {isAdmin && (
+                <button
+                  onClick={() => setIsSharedFolderModalOpen(true)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: currentOrg.brand_color_primary || 'var(--color-accent)',
+                    padding: '4px',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}
+                  title="Crear carpeta compartida"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {sharedFolders.length === 0 ? (
+              <div style={{
+                fontSize: '12px',
+                color: 'var(--color-gray-medium)',
+                opacity: 0.6,
+                padding: '4px 0',
+                fontStyle: 'italic'
+              }}>
+                {isAdmin ? 'No hay carpetas compartidas' : 'Sin carpetas compartidas'}
+              </div>
+            ) : (
+              sharedFolders.map(folder => (
+                <div key={folder.id} style={{ marginBottom: '4px' }}>
+                  <button
+                    onClick={() => handleToggleSharedFolder(folder.id)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      background: 'transparent',
+                      border: 'none',
+                      borderRadius: '8px',
+                      color: 'var(--color-white)',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      textAlign: 'left'
+                    }}
+                    onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                    onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke={currentOrg.brand_color_primary || 'var(--color-accent)'}
+                      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    >
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                      <line x1="12" y1="11" x2="12" y2="17"/>
+                      <line x1="9" y1="14" x2="15" y2="14"/>
+                    </svg>
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {folder.name}
+                    </span>
+                    {/* Unshare button (only for folder owner who is admin) */}
+                    {isAdmin && folder.user_id === user?.id && (
+                      <div
+                        onClick={(e) => { e.stopPropagation(); handleUnshareFolder(folder.id); }}
+                        style={{ padding: '2px', cursor: 'pointer', color: 'var(--color-gray-medium)', display: 'flex', alignItems: 'center' }}
+                        title="Dejar de compartir"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18"/>
+                          <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                      </div>
+                    )}
+                    <svg
+                      width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                      style={{
+                        transform: expandedSharedFolders.has(folder.id) ? 'rotate(90deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.2s',
+                        opacity: 0.5
+                      }}
+                    >
+                      <path d="M9 18l6-6-6-6"/>
+                    </svg>
+                  </button>
+
+                  {/* Shared folder chats */}
+                  {expandedSharedFolders.has(folder.id) && (
+                    <div style={{ paddingLeft: '24px' }}>
+                      {!sharedFolderChats[folder.id] ? (
+                        <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)', padding: '4px 0' }}>
+                          Cargando...
+                        </div>
+                      ) : sharedFolderChats[folder.id].length === 0 ? (
+                        <div style={{ fontSize: '11px', color: 'var(--color-gray-medium)', padding: '4px 0', fontStyle: 'italic' }}>
+                          Sin conversaciones
+                        </div>
+                      ) : (
+                        sharedFolderChats[folder.id].map(chat => (
+                          <button
+                            key={chat.id}
+                            onClick={() => {
+                              setCurrentChatId(chat.id);
+                              setMessages(chat.messages);
+                              setIsSidebarOpen(false);
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              background: currentChatId === chat.id ? 'var(--bg-dark-tertiary)' : 'transparent',
+                              border: 'none',
+                              borderRadius: '6px',
+                              color: currentChatId === chat.id ? 'var(--color-white)' : 'var(--color-gray-light)',
+                              fontSize: '12px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              marginBottom: '2px'
+                            }}
+                            onMouseOver={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+                            onMouseOut={(e) => { if (currentChatId !== chat.id) e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.5, flexShrink: 0 }}>
+                              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                            </svg>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {chat.title || 'Sin título'}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* PROYECTOS Section (IRIS) */}
+        {irisConfigured && (
+          <div style={{ padding: '0 16px', marginBottom: '8px' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '8px'
+            }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-gray-medium)', textTransform: 'uppercase' }}>
+                Proyectos
+              </span>
+              <button
+                onClick={async () => {
+                  setIrisLoading(true);
+                  try {
+                    const teams = await getTeams();
+                    setIrisTeams(teams);
+                    setIrisProjects({});
+                    setIrisIssues({});
+                    setExpandedTeams(new Set());
+                    setExpandedProjects(new Set());
+                  } finally {
+                    setIrisLoading(false);
+                  }
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--color-accent)',
+                  padding: '4px',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+                title="Actualizar proyectos"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <polyline points="1 20 1 14 7 14"></polyline>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+              </button>
+            </div>
+
+            {irisLoading && (
+              <div style={{ textAlign: 'center', padding: '8px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                Cargando...
+              </div>
+            )}
+
+            {!irisLoading && irisTeams.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '8px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                No hay equipos disponibles
+              </div>
+            )}
+
+            {irisTeams.map(team => (
+              <div key={team.team_id} style={{ marginBottom: '4px' }}>
+                <button
+                  onClick={() => handleToggleTeam(team.team_id)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    background: 'transparent',
+                    border: 'none',
+                    borderRadius: '8px',
+                    color: 'var(--color-white)',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    textAlign: 'left'
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                  onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                >
+                  <div style={{
+                    width: '8px', height: '8px', borderRadius: '50%',
+                    backgroundColor: team.color || 'var(--color-accent)',
+                    flexShrink: 0
+                  }} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {team.name}
+                  </span>
+                  <svg
+                    width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                    style={{
+                      transform: expandedTeams.has(team.team_id) ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 0.2s'
+                    }}
+                  >
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </button>
+
+                {expandedTeams.has(team.team_id) && (
+                  <div style={{ paddingLeft: '20px' }}>
+                    {!irisProjects[team.team_id] ? (
+                      <div style={{ padding: '4px 10px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                        Cargando proyectos...
+                      </div>
+                    ) : irisProjects[team.team_id].length === 0 ? (
+                      <div style={{ padding: '4px 10px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                        Sin proyectos
+                      </div>
+                    ) : (
+                      irisProjects[team.team_id].map(project => (
+                        <div key={project.project_id} style={{ marginBottom: '2px' }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '6px 10px',
+                              borderRadius: '8px',
+                              cursor: 'pointer'
+                            }}
+                            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                            onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                          >
+                            <div
+                              onClick={() => handleToggleProject(project.project_id)}
+                              style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}
+                            >
+                              <div style={{
+                                width: '6px', height: '6px', borderRadius: '2px',
+                                backgroundColor: project.icon_color || '#6b7280',
+                                flexShrink: 0
+                              }} />
+                              <span style={{
+                                fontSize: '12px',
+                                color: 'var(--color-white)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                flex: 1
+                              }}>
+                                {project.project_name}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: '10px', color: 'var(--color-gray-medium)', fontWeight: 500, flexShrink: 0 }}>
+                              {project.completion_percentage}%
+                            </span>
+                            <div
+                              style={{
+                                width: '6px', height: '6px', borderRadius: '50%',
+                                backgroundColor: getProjectStatusColor(project.project_status),
+                                flexShrink: 0
+                              }}
+                              title={getProjectStatusLabel(project.project_status)}
+                            />
+                            <svg
+                              onClick={(e) => { e.stopPropagation(); handleToggleProject(project.project_id); }}
+                              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-gray-medium)" strokeWidth="2"
+                              style={{
+                                transform: expandedProjects.has(project.project_id) ? 'rotate(180deg)' : 'rotate(0deg)',
+                                transition: 'transform 0.2s',
+                                cursor: 'pointer',
+                                flexShrink: 0
+                              }}
+                            >
+                              <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                            <div
+                              onClick={(e) => { e.stopPropagation(); handleIrisProjectClick(project); }}
+                              style={{ cursor: 'pointer', flexShrink: 0, opacity: 0.6, display: 'flex', alignItems: 'center' }}
+                              onMouseOver={(e) => { e.currentTarget.style.opacity = '1'; const svg = e.currentTarget.querySelector('svg'); if (svg) svg.style.stroke = 'var(--color-accent)'; }}
+                              onMouseOut={(e) => { e.currentTarget.style.opacity = '0.6'; const svg = e.currentTarget.querySelector('svg'); if (svg) svg.style.stroke = 'var(--color-gray-medium)'; }}
+                              title="Hablar con Lia sobre este proyecto"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-gray-medium)" strokeWidth="2">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                              </svg>
+                            </div>
+                          </div>
+
+                          {expandedProjects.has(project.project_id) && (
+                            <div style={{ paddingLeft: '18px' }}>
+                              {!irisIssues[project.project_id] ? (
+                                <div style={{ padding: '4px 10px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                                  Cargando tareas...
+                                </div>
+                              ) : irisIssues[project.project_id].length === 0 ? (
+                                <div style={{ padding: '4px 10px', color: 'var(--color-gray-medium)', fontSize: '11px' }}>
+                                  Sin tareas
+                                </div>
+                              ) : (
+                                irisIssues[project.project_id].map(issue => (
+                                  <div
+                                    key={issue.issue_id}
+                                    onClick={() => handleIrisIssueClick(issue)}
+                                    style={{
+                                      padding: '4px 10px',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '6px',
+                                      marginBottom: '1px'
+                                    }}
+                                    onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark-tertiary)'}
+                                    onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                                  >
+                                    <div style={{
+                                      width: '5px', height: '5px', borderRadius: '50%',
+                                      backgroundColor: getIssueStatusColor(issue.status?.status_type),
+                                      flexShrink: 0
+                                    }} />
+                                    <span style={{ fontSize: '10px', color: 'var(--color-gray-medium)', flexShrink: 0 }}>
+                                      #{issue.issue_number}
+                                    </span>
+                                    <span style={{
+                                      fontSize: '11px',
+                                      color: 'var(--color-white)',
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                      flex: 1,
+                                      opacity: 0.85
+                                    }}>
+                                      {issue.title}
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Chat History Section */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px' }}>
+        <div style={{ padding: '0 16px', paddingBottom: '8px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-gray-medium)', textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
             Historial
           </span>
@@ -4376,6 +5424,7 @@ function App() {
             </div>
           )}
         </div>
+        </div>{/* End scrollable middle */}
 
         {/* Sidebar Footer - Settings & Feedback */}
         <div style={{
@@ -4518,6 +5567,96 @@ function App() {
                   fontSize: '13px',
                   fontWeight: 600,
                   opacity: newFolderName.trim() ? 1 : 0.5
+                }}
+              >
+                Crear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shared Folder Creation Modal */}
+      {isSharedFolderModalOpen && currentOrg && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.6)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 10001,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          <div style={{
+            width: '360px',
+            background: 'var(--bg-modal)',
+            borderRadius: '16px',
+            border: '1px solid var(--border-modal)',
+            padding: '24px',
+            boxShadow: 'var(--shadow-modal)'
+          }}>
+            <h3 style={{ color: 'var(--color-white)', fontSize: '16px', fontWeight: 600, margin: '0 0 4px 0' }}>
+              Crear Carpeta Compartida
+            </h3>
+            <p style={{
+              color: 'var(--color-gray-medium)',
+              fontSize: '12px',
+              margin: '0 0 16px 0'
+            }}>
+              Visible para todos los miembros de {currentOrg.name}
+            </p>
+            <input
+              type="text"
+              value={newSharedFolderName}
+              onChange={(e) => setNewSharedFolderName(e.target.value)}
+              placeholder="Nombre de la carpeta..."
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                backgroundColor: 'var(--bg-dark-tertiary)',
+                border: '1px solid var(--border-modal)',
+                borderRadius: '8px',
+                color: 'var(--color-white)',
+                fontSize: '14px',
+                outline: 'none',
+                marginBottom: '16px',
+                boxSizing: 'border-box'
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateSharedFolder(); }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setIsSharedFolderModalOpen(false); setNewSharedFolderName(''); }}
+                style={{
+                  padding: '10px 20px',
+                  background: 'transparent',
+                  border: '1px solid var(--color-gray-medium)',
+                  borderRadius: '8px',
+                  color: 'var(--color-white)',
+                  cursor: 'pointer',
+                  fontSize: '13px'
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCreateSharedFolder}
+                disabled={!newSharedFolderName.trim()}
+                style={{
+                  padding: '10px 20px',
+                  background: currentOrg.brand_color_primary || 'var(--color-accent)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  opacity: newSharedFolderName.trim() ? 1 : 0.5
                 }}
               >
                 Crear
@@ -4917,7 +6056,7 @@ function App() {
       {suggestionData && (
         <ProjectSuggestionModal
           isOpen={suggestionData.isOpen}
-          onClose={() => setSuggestionData(null)}
+          onClose={() => { if (currentChatId) dismissedSuggestionChats.current.add(currentChatId); setSuggestionData(null); }}
           onConfirm={handleSuggestionConfirm}
           suggestionType={suggestionData.type}
           targetName={suggestionData.targetName}

@@ -1,6 +1,6 @@
 # 🔷 SOFLIA Agent (Alpha)
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue.svg?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=flat-square)
 ![React](https://img.shields.io/badge/React-18.0-61DAFB.svg?style=flat-square&logo=react)
 ![Gemini](https://img.shields.io/badge/AI-Gemini%20Multimodal-8E75B2.svg?style=flat-square&logo=google-gemini)
 ![Live API](https://img.shields.io/badge/Live-Enabled-red.svg?style=flat-square&logo=youtube-live)
@@ -20,17 +20,17 @@
    - [Agentic Computer Use](#-agentic-computer-use-beta)
    - [Deep Research Agent](#-deep-research-agent)
    - [Meeting Intelligence](#-meeting-intelligence)
-3. [Motor de Contexto & Proyectos](#-motor-de-contexto--proyectos)
-   - [Centro de Comando](#-centro-de-comando)
+3. [Ecosistema de Productividad](#-ecosistema-de-productividad)
+   - [Project Hub & Gestión](#-project-hub--gestión)
+   - [Suite de Herramientas IA](#-suite-de-herramientas-ia)
+4. [Motor de Contexto](#-motor-de-contexto)
    - [Inyección de Memoria](#-inyección-de-memoria)
    - [Estándares de Nomenclatura](#-estándares-de-nomenclatura)
-4. [Arquitectura Técnica](#-arquitectura-técnica)
-   - [Stack Tecnológico](#-stack-tecnológico)
+5. [Arquitectura Técnica](#-arquitectura-técnica)
+   - [Modelo de Datos (Project Hub)](#-modelo-de-datos-project-hub)
    - [Estructura del Proyecto](#-estructura-del-proyecto)
-   - [Servicios Clave](#-servicios-clave)
-5. [Guía de Instalación](#-guía-de-instalación)
-6. [Configuración](#-configuración)
-7. [Solución de Problemas](#-solución-de-problemas)
+6. [Guía de Instalación](#-guía-de-instalación)
+7. [Configuración](#-configuración)
 8. [Design System: SOFIA](#-design-system-sofia)
 
 ---
@@ -58,16 +58,8 @@ El corazón de la experiencia "viva" de SOFLIA es su integración con la **Gemin
 
 - **Latencia Ultra-Baja**: Comunicación bidireccional casi instantánea.
 - **Interrupción Natural (Voice Activity Detection)**: Puedes interrumpir a SOFLIA mientras habla, y ella se detendrá y escuchará, igual que en una llamada humana.
-- **Manejo de Sesiones**: Sistema inteligente que gestiona la ventana de contexto de 15 minutos, auto-reconectando silenciosamente si la sesión expira.
-- **Personalidad Sonora**: Utiliza la voz `Aoede` (predefinida por Google) para ofrecer un tono profesional, calmado y empático.
-
-#### Implementación Técnica:
-
-- Usa `src/services/live-api.ts` para manejar el stream de audio PCM a 24kHz.
-- Implementa `AudioContext` nativo del navegador para reproducción sin lag.
-- Utiliza **Offscreen Documents** para capturar el micrófono en segundo plano, superando las limitaciones de Manifest V3.
-
----
+- **Manejo de Sesiones**: Sistema inteligente que gestiona la ventana de contexto de 15 minutos.
+- **Personalidad Sonora**: Utiliza la voz `Aoede` para ofrecer un tono profesional y empático.
 
 ### 🖥️ Agentic Computer Use (Beta)
 
@@ -75,83 +67,65 @@ SOFLIA puede interactuar directamente con las páginas web que visitas, actuando
 
 #### ¿Cómo funciona?
 
-1. **Análisis del DOM**: El content script (`content/index.ts`) inyecta un analizador que mapea todos los elementos interactivos de la página.
-2. **Accessibility Tree**: Genera un árbol simplificado de la página, asignando un ID único (`data-lia-ref`) a cada botón, input o enlace importante.
-3. **Set-of-Marks (SoM)**: Visualmente, superpone etiquetas naranjas con IDs sobre los elementos, permitiendo que el modelo de visión "vea" exactamente dónde hacer clic.
-4. **Ejecución de Acciones**:
-   - `click`: Simula clics humanos (mousedown, mouseup, click).
-   - `type`: Escribe en campos de texto, compatible con React/Vue (dispara eventos sintéticos).
-   - `scroll`: Desplaza la página inteligente para encontrar información.
-   - `hover`: Simula el movimiento del mouse para revelar menús.
+1. **Análisis del DOM**: El content script inyecta un analizador que mapea elementos interactivos.
+2. **Accessibility Tree**: Genera un árbol simplificado con IDs únicos (`data-lia-ref`).
+3. **Set-of-Marks (SoM)**: Visualmente, superpone etiquetas naranjas con IDs sobre los elementos.
+4. **Ejecución de Acciones**: Simula `click`, `type`, `scroll`, `hover` nativamente.
 
 > **Caso de Uso**: "Entra a Amazon, busca 'Teclado mecánico', filtra por 4 estrellas y dime cuál es el más barato."
 
----
-
 ### 🔬 Deep Research Agent
 
-Para preguntas complejas que requieren más que una simple búsqueda en Google, SOFLIA activa su modo de **Investigación Profunda**.
+Para preguntas complejas que requieren profundidad, SOFLIA activa su modo de **Investigación Profunda**.
 
 #### Flujo de Trabajo:
 
-1. **Detección de Intención**: El sistema analiza si tu prompt requiere profundidad (palabras clave como "investiga a fondo", "analiza el mercado").
-2. **Agente Dedicado**: Cambia al modelo `deep-research-pro` (o simulación avanzada).
-3. **Iteración**:
-   - Genera un plan de investigación.
-   - Ejecuta múltiples búsquedas paralelas.
-   - Lee y sintetiza contenidos de diversas fuentes.
-4. **Reporte Estructurado**: Entrega un artefacto final con:
-   - Resumen Ejecutivo.
-   - Análisis Detallado.
-   - Fuentes Citadas.
-   - Datos y Estadísticas.
-
-**Fallback Inteligente**: Si el modelo Pro no está disponible, el sistema degrada elegantemente a `gemini-2.5-flash` con Grounding de Google Search, manteniendo la calidad alta.
-
----
+1. **Agente Dedicado**: Cambia al modelo `deep-research-pro` (o simulación avanzada).
+2. **Iteración**: Genera plan, ejecuta búsquedas paralelas, sintetiza fuentes.
+3. **Reporte Estructurado**: Entrega un artefacto final con resumen ejecutivo, análisis detallado y fuentes citadas.
 
 ### 🎙️ Meeting Intelligence
 
-SOFLIA se integra nativamente en **Google Meet** para ser tu secretaria de reuniones perfecta.
-
-#### Funcionalidades:
-
-- **Auto-Detección**: Detecta automáticamente cuando entras a una URL de `meet.google.com`.
-- **Transcripción en Tiempo Real**:
-  - Activa los subtítulos (Closed Captions) de Meet automáticamente.
-  - **Captura Invisible**: Oculta visualmente los subtítulos nativos (CSS injection) para no molestar, mientras lee el stream de texto internamente.
-  - Identifica hablantes y tiempos.
-- **Asistencia en Vivo**:
-  - Puedes preguntarle a SOFLIA durante la reunión: "¿Qué acaba de decir Juan sobre el presupuesto?".
-  - Genera minutas y action items al finalizar.
+SOFLIA se integra nativamente en **Google Meet** para ser tu secretaria de reuniones perfecta. Detecta URLs de Meet, activa subtítulos invisibles para capturar el diálogo y genera minutas o respuestas en tiempo real.
 
 ---
 
-## 🧠 Motor de Contexto & Proyectos
+## 🚀 Ecosistema de Productividad
 
-La gran diferenciación de SOFLIA es que **no olvida**.
+### 📂 Project Hub & Gestión
 
-### 📂 Centro de Comando
+Hemos evolucionado de un simple chat a un **Sistema de Gestión de Proyectos Completo**. El nuevo esquema de base de datos (`pROJECT-hUB.sql`) soporta:
 
-Hemos reemplazado la lista plana de chats por un **Project Hub** visual.
+- **Workspaces & Teams**: Organización jerárquica para múltiples equipos.
+- **Proyectos (PM)**: Gestión con estados, fechas clave y leads.
+- **Issues & Tareas**: Sistema completo de tracking con ciclos, prioridades y asignaciones.
+- **Vistas Personalizadas**: Kanban, Lista, Timeline.
 
-- **Grid View**: Visualización de tarjetas para tus chats y recursos.
-- **Interacción Directa**: No necesitas "entrar" a un chat para verlo. Puedes previsualizar, renombrar o mover conversaciones desde el hub.
-- **Gestión de Archivos**: Adjunta documentos de contexto a nivel de proyecto, disponibles para todos los chats de esa carpeta.
+### 🛠️ Suite de Herramientas IA
+
+Incorpora **25+ Herramientas Especializadas** (`seed_productivity_tools.sql`) divididas en 5 categorías de alto impacto:
+
+| Categoría         | Herramientas Clave                                                        |
+| ----------------- | ------------------------------------------------------------------------- |
+| **Productividad** | Consultor Agile/Scrum, Sprint Planning, Retrospectivas, Roadmap Generator |
+| **Documentación** | Generador de Contratos, Políticas, Reportes Ejecutivos, Doc. Técnica      |
+| **Análisis**      | Analista de Competencia, Business Model Canvas, PESTEL, Evaluador de KPIs |
+| **Comunicación**  | Redactor de Prensa, Social Media Manager, Asistente de Negociación        |
+| **Desarrollo**    | Code Reviewer, Arquitecto de Software, Diseñador de APIs, DevOps          |
+
+Cada herramienta viene con un **System Prompt** optimizado por expertos y **Starter Prompts** para uso inmediato.
+
+---
+
+## 🧠 Motor de Contexto
 
 ### 🧠 Inyección de Memoria
 
-Cuando chateas dentro de una carpeta (ej. "Lanzamiento Q3"), SOFLIA:
-
-1. Recupera automáticamente los resúmenes y decisiones clave de _otros_ chats en esa misma carpeta.
-2. Inyecta este contexto en el `System Prompt` de forma transparente.
-3. Resultado: No tienes que repetirle "Recuerda que nuestro target son PyMEs", porque ya lo sabe del chat de la semana pasada.
+Cuando chateas dentro de un proyecto (ej. "Lanzamiento Q3"), SOFLIA recupera automáticamente los resúmenes y decisiones de otros chats en ese contexto e inyecta esta información en el prompt, eliminando la necesidad de repetir contexto.
 
 ### 🏷️ Estándares de Nomenclatura
 
-Para mantener el orden, el sistema sugiere y valida nombres de proyectos bajo el estándar **SOFIA-STD-101**:
-
-#### Estructura: `[CATEGORIA]-[NombreDescriptivo]`
+Utilizamos el sistema **SOFIA-STD-101** para nomenclatura de proyectos:
 
 | Categoría       | Prefijo | Uso                          | Ejemplo              |
 | --------------- | ------- | ---------------------------- | -------------------- |
@@ -159,7 +133,6 @@ Para mantener el orden, el sistema sugiere y valida nombres de proyectos bajo el
 | **Operación**   | `OPS-`  | Procesos diarios, reportes   | `OPS-ReporteMensual` |
 | **Análisis**    | `ANA-`  | Investigación, benchmarks    | `ANA-Competencia`    |
 | **Creatividad** | `CRE-`  | Copy, diseño, ideación       | `CRE-CampanaNavidad` |
-| **Aprendizaje** | `APR-`  | Tutoriales, cursos           | `APR-CursoReact`     |
 | **Desarrollo**  | `DEV-`  | Código, arquitectura         | `DEV-RefactorAPI`    |
 
 ---
@@ -171,56 +144,29 @@ Para mantener el orden, el sistema sugiere y valida nombres de proyectos bajo el
 - **Frontend**: React 18, TypeScript, Vite.
 - **Estilos**: Tailwind CSS + Variables CSS (Sistema SOFIA).
 - **Extension Framework**: Chrome Manifest V3.
-- **Backend / BaaS**: Supabase (PostgreSQL para persistencia).
+- **Backend**: Supabase (PostgreSQL).
 - **IA**: Google Gemini API (REST + WebSocket).
-- **Audio**: Web Audio API + AudioWorklets.
+
+### 🗄️ Modelo de Datos (Project Hub)
+
+El esquema de base de datos ha sido rediseñado para soportar aplicaciones de nivel empresarial. Archivos clave en `/supabase`:
+
+1.  **`pROJECT-hUB.sql`**: Define `workspaces`, `teams`, `projects`, `tasks`, `issues`.
+2.  **`seed_productivity_tools.sql`**: Pobla la tabla `tools` con los 25 agentes especializados.
+3.  **`Lia-Extension.sql`**: Esquema base de la extensión (chats, mensajes, usuarios).
 
 ### 📂 Estructura del Proyecto
 
 ```text
 src/
 ├── background/         # Service Workers (Manejo de eventos Chrome)
-│   ├── index.ts        # Entry point del background
-│   └── offscreen.html  # Documento para captura de audio (Workaround V3)
-├── components/         # Componentes UI (React)
-│   ├── Cortex/         # Layout principal del "Centro de Comando"
-│   ├── Chat/           # Lógica de chat y renderizado de mensajes
-│   └── SOJ/            # Componentes del sistema de diseño SOFIA
-├── content/            # Scripts inyectados en páginas web
-│   ├── index.ts        # Lógica principal (Web Agent, Meet, Selection Popup)
-│   └── styles.css      # Estilos inyectados
-├── lib/
-│   └── supabase.ts     # Cliente DB con adaptador de almacenamiento Chrome
-├── popups/             # Interfaz principal de la extensión
-│   └── App.tsx
-├── prompts/            # Ingeniería de Prompts
-│   ├── chat.ts         # System Prompts principales
-│   ├── computer-use.ts # Definiciones de herramientas de navegación
-│   └── utils.ts
-├── services/           # Lógica de negocio y APIs
-│   ├── gemini.ts       # Cliente principal de IA (Text/Vision/Tools)
-│   ├── live-api.ts     # Cliente WebSocket para Audio/Voz
-│   ├── audio/          # Procesadores de audio
-│   └── meet-*.ts       # Lógica específica de Google Meet
-└── types/              # Definiciones de TypeScript
+├── components/         # UI: ProjectHub, Chat, ToolsLibrary
+├── content/            # Scripts inyectados (Web Agent, Meet)
+├── lib/                # Clientes Supabase (Multi-tenant config)
+├── prompts/            # System Prompts & Tool Definitions
+├── services/           # Lógica de negocio (Gemini, Live API, Audio)
+└── types/              # Definiciones TypeScript (DB Schema)
 ```
-
-### 🔑 Servicios Clave
-
-#### `services/gemini.ts`
-
-Maneja la lógica compleja de selección de modelos. Implementa "Thinking Config" para modelos que soportan cadena de pensamiento (Gemini 2.5/3.0). Incluye la lógica de **Deep Analysis Detection**: si detecta palabras clave de análisis profundo, cambia el `systemInstruction` por uno mucho más riguroso (ver línea 382).
-
-#### `services/live-api.ts`
-
-Una clase `LiveClient` robusta que maneja el ciclo de vida de la conexión WebSocket.
-
-- **Buffer Management**: Sistema de cola (`audioQueue`) para asegurar reproducción suave del audio recibido.
-- **AudioContext Health**: Reinicia el contexto de audio en periodos de silencio para evitar glitches de memoria.
-
-#### `services/supabase.ts`
-
-Adapta el cliente de Supabase para funcionar en una extensión. Reemplaza `localStorage` con `chrome.storage.local` para que la sesión del usuario persista incluso si cierra el navegador completamente.
 
 ---
 
@@ -229,117 +175,59 @@ Adapta el cliente de Supabase para funcionar en una extensión. Reemplaza `local
 ### Prerrequisitos
 
 - Node.js 18+
-- Cuenta de Google Cloud (para Gemini API)
 - Proyecto de Supabase
-- Navegador basado en Chromium (Chrome, Edge, Brave)
+- Google Cloud API Key (Gemini)
 
-### 1. Clonar y Preparar
+### 1. Clonar y Dependencias
 
 ```bash
-git clone https://github.com/tu-usuario/Is-Extension.git
-cd Lia-Extension
+git clone https://github.com/tu-usuario/SofLIA-Extension.git
+cd SofLIA-Extension
 npm install
 ```
 
-### 2. Configuración de Variables
+### 2. Configuración (.env)
 
-Crea un archivo `.env` en la raíz basada en `.env.example`:
+Crea `.env` basado en `.env.example`:
 
 ```env
-# Supabase Configuration
-VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
-VITE_SUPABASE_ANON_KEY=tu-anon-key-publica
-
-# Gemini API (AI Studio / Vertex AI)
-VITE_GEMINI_API_KEY=tu-api-key-gemini
-
-# Live API Endpoint (Generalmente fijo)
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+VITE_GEMINI_API_KEY=...
 VITE_LIVE_API_URL=wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent
-
-# Optional: Sofia Platform Integration
-VITE_SOFIA_SUPABASE_URL=...
 ```
 
-### 3. Base de Datos
+### 3. Base de Datos (SQL Editor)
 
-Ejecuta los scripts SQL ubicados en la carpeta `/supabase` en el Editor SQL de tu dashboard de Supabase:
+Ejecuta los scripts en este orden en Supabase:
 
-1. `users.sql`: Tabla de perfiles.
-2. `folders.sql`: Tablas para carpetas y proyectos.
-3. `conversations.sql`: Historial de chats.
+1.  `Lia-Extension.sql` (Base)
+2.  `pROJECT-hUB.sql` (Gestión de Proyectos)
+3.  `seed_productivity_tools.sql` (Herramientas)
 
-### 4. Compilación
+### 4. Compilación y Build
 
 ```bash
-# Para desarrollo (watch mode)
-npm run dev
-
-# Para producción (genera carpeta /dist)
 npm run build
+# Genera la carpeta /dist lista para subir a Chrome
 ```
 
-### 5. Cargar en Chrome
+### 5. Empaquetado (Producción)
 
-1. Abre `chrome://extensions/`
-2. Activa el "Modo de desarrollador" (esquina superior derecha).
-3. Clic en "Cargar descomprimida" (Load unpacked).
-4. Selecciona la carpeta `dist` generada en el paso anterior.
-5. ¡Listo! Verás el icono de SOFLIA en tu barra de herramientas.
+Para subir a Chrome Web Store, crea el .zip **solo con el contenido de dist**:
 
----
-
-## 🔧 Solución de Problemas
-
-### Error: "WebSocket connection failed"
-
-- **Causa**: Tu API Key no tiene habilitada la API "Generative Language API" en Google Cloud Console.
-- **Solución**: Ve a la consola de Google Cloud > APIs & Services > Habilitar API > Busca "Generative Language API".
-
-### Error: "Audio capture failed"
-
-- **Causa**: El navegador bloqueó el acceso al micrófono.
-- **Solución**:
-  1. Haz clic derecho en el icono de la extensión > Opciones (si existe) o abre la extensión.
-  2. Asegúrate de conceder permisos de micrófono cuando el navegador lo solicite.
-  3. Verifica que no tengas otra extensión capturando audio exclusivamente.
-
-### El mapa no aparece
-
-- **Causa**: El modelo no detectó la intención geográfica.
-- **Solución**: Sé explícito. Usa palabras como "muéstrame en el mapa", "¿dónde queda?", "ubicación de...".
-- **Nota**: El sistema usa `gemini-2.5-flash` para mapas, ya que es más estable con tool-calling que las versiones preview.
-
-### Computer Use no hace clic
-
-- **Causa**: La página tiene iFrames o Shadow DOM complejos que bloquean el content script.
-- **Solución**: Actualmente en Beta. Intenta hacer scroll manual para que el elemento sea visible antes de pedir la acción.
+```powershell
+cd dist
+Compress-Archive -Path '.\*' -DestinationPath '..\SofLIA-Extension.zip' -Force
+```
 
 ---
 
 ## 🎨 Design System: SOFIA
 
-Nuestro lenguaje visual es una parte crítica de la identidad del agente.
-
-- **Colores Primarios**:
-  - `Deep Blue`: `#0A2540` (Fondos, Paneles)
-  - `Cyan Vivid`: `#00D4B3` (Acentos, Botones, Estados activos)
-  - `Text Light`: `#E2E8F0` (Lecturabilidad)
-
-- **Tipografía**:
-  - Familia: `Inter` o `SF Pro Display`.
-  - Escala: Títulos claros, cuerpos de texto con alto interlineado (1.6) para lectura cómoda.
-
-- **Componentes**:
-  - **Glassmorphism**: Uso extensivo de `backdrop-filter: blur(12px)` con bordes semitransparentes.
-  - **Animaciones**: Transiciones suaves (200-300ms cubic-bezier). El chat usa una animación de "typewriter" para simular el pensamiento humano.
+Nuestro lenguaje visual utiliza **Glassmorphism**, tipografía `Inter`, y una paleta de colores `Deep Blue` (`#0A2540`) con acentos `Cyan Vivid` (`#00D4B3`). Mantiene una estética profesional, limpia y futurista.
 
 ---
 
-## 📜 Licencia y Créditos
-
-Desarrollado por **Fernando Suarez**.
-Este proyecto es software propietario en fase Alpha.
-
----
-
-_Documentación actualizada automáticamente el 07 de Febrero de 2026._
+**Desarrollado por Fernando Suarez** | Software Propietario Alpha
+_Documentación actualizada: 13 de Febrero de 2026_

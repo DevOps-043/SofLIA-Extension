@@ -635,7 +635,9 @@ ${lines.join('\n')}
             <div style={{ ...styles.emptyState, height: 'auto', padding: '24px' }}>
               <p style={{ fontSize: '13px' }}>Esperando transcripción...</p>
               <p style={{ fontSize: '11px', opacity: 0.7 }}>
-                Asegúrate de que los subtítulos estén activados en Meet
+                Activando subtítulos automáticamente...
+                <br />
+                Si no aparecen, actívalos manualmente con la tecla "c"
               </p>
             </div>
           ) : (

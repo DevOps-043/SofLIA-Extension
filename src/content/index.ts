@@ -8,6 +8,7 @@ import {
   isGoogleMeetUrl,
   isMeetingActive,
   enableClosedCaptions,
+  enableCCViaKeyboard,
   findCaptionContainer,
   hideCaptionsVisually,
   getParticipants,
@@ -879,18 +880,48 @@ function stopMeetTranscription(): void {
 
 function enableCCWithRetry(): void {
   if (enableClosedCaptions()) { setupCaptionHiding(); return; }
+
   let attempts = 0;
+  let triedKeyboard = false;
+
   ccEnableRetryInterval = setInterval(() => {
     attempts++;
-    if (attempts > 5 || meetCaptionObserver?.isCaptionsDetected()) {
+
+    // Stop if captions already detected by the observer
+    if (meetCaptionObserver?.isCaptionsDetected()) {
       if (ccEnableRetryInterval) { clearInterval(ccEnableRetryInterval); ccEnableRetryInterval = null; }
+      console.log('Soflia: CC retry stopped - captions detected by observer');
       return;
     }
-    if (enableClosedCaptions()) {
-      if (ccEnableRetryInterval) { clearInterval(ccEnableRetryInterval); ccEnableRetryInterval = null; }
-      setupCaptionHiding();
+
+    // Try button click first (up to 10 attempts = 30 seconds)
+    if (attempts <= 10) {
+      if (enableClosedCaptions()) {
+        if (ccEnableRetryInterval) { clearInterval(ccEnableRetryInterval); ccEnableRetryInterval = null; }
+        setupCaptionHiding();
+        return;
+      }
     }
-  }, 5000);
+
+    // After 5 failed button attempts, try keyboard shortcut as fallback
+    if (attempts === 5 && !triedKeyboard) {
+      triedKeyboard = true;
+      console.log('Soflia: Button method failed 5 times, trying keyboard shortcut...');
+      enableCCViaKeyboard();
+    }
+
+    // After 8 attempts, try keyboard shortcut again
+    if (attempts === 8 && triedKeyboard) {
+      console.log('Soflia: Retrying keyboard shortcut...');
+      enableCCViaKeyboard();
+    }
+
+    // Stop after 12 attempts (36 seconds)
+    if (attempts > 12) {
+      if (ccEnableRetryInterval) { clearInterval(ccEnableRetryInterval); ccEnableRetryInterval = null; }
+      console.log('Soflia: CC enable max retries reached. Captions may need manual activation.');
+    }
+  }, 3000); // Retry every 3 seconds (faster than before)
 }
 
 function setupCaptionHiding(): void {
